@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Local app state
+.cheburnet/
+settings.json
+cache/
+installers/
+tools/
+
+# Build artifacts
+build/
+dist/
+*.toc
+*.pkg
+*.manifest
+*.spec
+!Cheburnet.spec
+
+# Release binaries and archives
+*.exe
+*.msi
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# Logs and reports
+*.log
+warn-*.txt
+xref-*.html
+
+# Test/type/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE/OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Root design scratch file; tracked source icon lives in assets/
+/cheburnet.png
