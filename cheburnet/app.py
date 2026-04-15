@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 import threading
 import tkinter as tk
@@ -11,9 +12,17 @@ from typing import Callable
 from cheburnet.config import SettingsStore
 from cheburnet.controllers.routes import RouteManager
 from cheburnet.controllers.singbox import SingBoxController
-from cheburnet.controllers.system import enable_dpi_awareness, is_admin, open_folder
+from cheburnet.controllers.system import IS_WINDOWS, enable_dpi_awareness, is_admin, open_folder, run_command
 from cheburnet.controllers.vpn import VpnController
 from cheburnet.controllers.zapret import ZapretController
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageTk
+except ImportError:  # pragma: no cover - graceful fallback for source runs without Pillow
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    ImageTk = None
 
 
 THEMES = {
@@ -59,17 +68,27 @@ class CheburnetApp(tk.Tk):
         self.current_tab = "dashboard"
         self.widgets_by_tab: dict[str, tk.Frame] = {}
         self.nav_buttons: dict[str, tk.Button] = {}
+        self.ui_images: list[tk.PhotoImage] = []
+        self.image_cache: dict[str, tk.PhotoImage] = {}
+        self.responsive_labels: list[tuple[tk.Widget, tk.Misc, int]] = []
+        self.settings_grid: tk.Frame | None = None
+        self.settings_left: tk.Frame | None = None
+        self.settings_right: tk.Frame | None = None
+        self.settings_stacked = False
         self.gradient_phase = 0.0
         self.header_generation = 0
         self.zapret_test_stop = threading.Event()
         self.is_closing = False
+        self.status_refresh_job: str | None = None
         self.title("Cheburnet")
         self._apply_window_icon()
         self.geometry(str(self.store.get("window_geometry", "1180x760")))
-        self.minsize(1040, 680)
+        self.minsize(760, 560)
+        self.resizable(True, True)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._configure_style()
         self._build_layout()
+        self.after(600, self._maybe_show_onboarding)
         self.after(1200, self._maybe_autostart)
 
     def _configure_style(self) -> None:
@@ -108,31 +127,28 @@ class CheburnetApp(tk.Tk):
 
     def _build_layout(self) -> None:
         self.configure(bg=self.colors["bg"])
+        self.ui_images = []
+        self.image_cache = {}
+        self.responsive_labels = []
+        self.settings_grid = None
+        self.settings_left = None
+        self.settings_right = None
+        self.settings_stacked = False
         self.root_frame = tk.Frame(self, bg=self.colors["bg"])
         self.root_frame.pack(fill="both", expand=True)
 
-        self.sidebar_width = self._sidebar_width()
-        self.sidebar = tk.Frame(self.root_frame, bg=self.colors["surface"], width=self.sidebar_width)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-
         self.main = tk.Frame(self.root_frame, bg=self.colors["bg"])
-        self.main.pack(side="left", fill="both", expand=True)
+        self.main.pack(fill="both", expand=True)
 
-        self._build_sidebar()
-        self._build_header()
         self.content = tk.Frame(self.main, bg=self.colors["bg"])
-        self.content.pack(fill="both", expand=True, padx=18, pady=(14, 18))
+        self.content.pack(fill="both", expand=True, padx=28, pady=24)
 
         self.widgets_by_tab = {
             "dashboard": self._dashboard_tab(),
-            "zapret": self._zapret_tab(),
-            "vpn": self._vpn_tab(),
-            "rules": self._rules_tab(),
-            "whitelist": self._whitelist_tab(),
             "settings": self._settings_tab(),
         }
         self._show_tab(self.current_tab)
+        self.after(800, self._refresh_main_status)
 
     def _build_sidebar(self) -> None:
         title = tk.Label(
@@ -145,7 +161,7 @@ class CheburnetApp(tk.Tk):
         title.pack(anchor="w", padx=22, pady=(24, 4))
         subtitle = tk.Label(
             self.sidebar,
-            text="zapret + VPN router",
+            text="Простая настройка интернета",
             bg=self.colors["surface"],
             fg=self.colors["muted"],
             font=("Segoe UI", 10),
@@ -157,6 +173,7 @@ class CheburnetApp(tk.Tk):
             ("vpn", "VPN"),
             ("rules", "Туннель сайтов"),
             ("whitelist", "Белые списки"),
+            ("guide", "Гайд"),
             ("settings", "Настройки"),
         ]
         self.nav_buttons.clear()
@@ -234,60 +251,70 @@ class CheburnetApp(tk.Tk):
 
     def _dashboard_tab(self) -> tk.Frame:
         frame = self._tab_frame()
-        grid = tk.Frame(frame, bg=self.colors["bg"])
-        grid.pack(fill="both", expand=True)
+        top = tk.Frame(frame, bg=self.colors["bg"])
+        top.pack(fill="x")
 
-        status_card = self._card(grid)
-        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 10))
-        actions_card = self._card(grid)
-        actions_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 10))
-        bottom = self._card(grid)
-        bottom.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        grid.columnconfigure(0, weight=3, uniform="dashboard")
-        grid.columnconfigure(1, weight=2, uniform="dashboard")
-        grid.rowconfigure(0, weight=0)
-        grid.rowconfigure(1, weight=1)
-
-        self._section_title(status_card, "Состояние")
-        self.dashboard_status = tk.Label(
-            status_card,
-            text=self._status_text(),
-            bg=self.colors["surface"],
+        title_box = tk.Frame(top, bg=self.colors["bg"])
+        title_box.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            title_box,
+            text="CheburNet",
+            bg=self.colors["bg"],
             fg=self.colors["text"],
-            justify="left",
-            font=("Segoe UI", 11),
-            wraplength=560,
-        )
-        self.dashboard_status.pack(anchor="w", padx=18, pady=(8, 18))
+            font=("Segoe UI Semibold", 34),
+        ).pack(anchor="w")
+        tk.Label(
+            title_box,
+            text="Три режима. Включите нужный, приложение подскажет остальное.",
+            bg=self.colors["bg"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 12),
+        ).pack(anchor="w", pady=(4, 0))
 
-        status_note = tk.Label(
-            status_card,
-            text=self._dashboard_note_text(),
-            bg=self.colors["surface"],
+        self._gear_button(top).pack(side="right", padx=(16, 0), pady=(4, 0))
+
+        modes = tk.Frame(frame, bg=self.colors["bg"])
+        modes.pack(fill="both", expand=True, pady=(34, 18))
+        modes.columnconfigure(0, weight=1)
+        self.mode_switches: dict[str, tk.Label] = {}
+        self.mode_status_labels: dict[str, tk.Label] = {}
+
+        rows = [
+            (
+                "zapret",
+                "YouTube и Discord",
+                "Для YouTube и Discord. Остальной интернет не трогаем.",
+            ),
+            (
+                "vpn",
+                "VPN",
+                "Весь интернет через выбранный VPN.",
+            ),
+            (
+                "tunnel",
+                "Туннелирование",
+                "Российские сайты напрямую, остальные через VPN.",
+            ),
+        ]
+        for index, (key, title, description) in enumerate(rows):
+            row = self._mode_row(modes, key, title, description)
+            row.grid(row=index, column=0, sticky="ew", pady=8)
+        modes.bind("<Configure>", lambda _event: self._update_responsive_text())
+
+        footer = tk.Frame(frame, bg=self.colors["bg"])
+        footer.pack(fill="x")
+        self.dashboard_status = tk.Label(
+            footer,
+            text="",
+            bg=self.colors["bg"],
             fg=self.colors["muted"],
             justify="left",
             font=("Segoe UI", 10),
-            wraplength=560,
         )
-        status_note.pack(anchor="w", fill="x", padx=18, pady=(0, 18))
-
-        self._section_title(actions_card, "Быстрые действия")
-        actions = tk.Frame(actions_card, bg=self.colors["surface"])
-        actions.pack(fill="x", padx=18, pady=(8, 18))
-        for label, command, danger in [
-            ("Запустить лучший zapret", self._start_best_zapret, False),
-            ("Остановить zapret", self._stop_zapret, True),
-            ("YouTube / Discord", lambda: self._show_tab("zapret"), False),
-            ("VPN профили", lambda: self._show_tab("vpn"), False),
-            ("Туннель сайтов", lambda: self._show_tab("rules"), False),
-            ("Белые списки", lambda: self._show_tab("whitelist"), False),
-        ]:
-            self._button(actions, label, command, danger=danger).pack(fill="x", pady=4)
-
-        self._section_title(bottom, "Журнал")
-        self.log = self._text(bottom, height=10)
-        self.log.pack(fill="both", expand=True, padx=18, pady=(8, 18))
-        self._log("Приложение запущено. Системные настройки сохраняются автоматически.")
+        self.dashboard_status.pack(side="left", anchor="w")
+        self.log = self._text(footer, height=3)
+        self.log.pack(side="right", fill="x", expand=True, padx=(18, 0))
+        self._log("Готово. Выберите режим на главном экране.")
         return frame
 
     def _zapret_tab(self) -> tk.Frame:
@@ -372,7 +399,7 @@ class CheburnetApp(tk.Tk):
         self._button(installers, "Установить WARP", lambda: self._install_vpn_component("warp")).pack(side="left", padx=8)
         tk.Label(
             left,
-            text="Для режима `Туннель сайтов` системный WireGuard включать не нужно: sing-box поднимает WireGuard сам из .conf.",
+            text="Если используете 'Туннель сайтов', кнопку 'Подключить системный VPN' обычно включать не нужно.",
             bg=self.colors["surface"],
             fg=self.colors["warning"],
             wraplength=430,
@@ -407,10 +434,8 @@ class CheburnetApp(tk.Tk):
         text = (
             f"VPN профиль: {name} [{protocol}]\n"
             f"sing-box: {singbox_path}\n"
-            "В этом режиме НЕ включайте WireGuard кнопкой во вкладке VPN. sing-box сам читает WireGuard .conf и поднимает VPN внутри TUN. "
-            "Если системный WireGuard для этого профиля уже запущен, Cheburnet попробует отключить его перед стартом туннеля.\n"
-            "WireGuard .conf работает как точный режим: .ru/.рф/.su и свои правила идут напрямую, финальный трафик идёт в VPN. "
-            "YouTube и Discord добавляются в direct, чтобы их продолжал обрабатывать zapret."
+            "Этот режим помогает пустить часть сайтов напрямую, а остальное через VPN.\n"
+            "Обычно достаточно: выбрать WireGuard .conf -> сгенерировать конфиг -> запустить туннель."
         )
         tk.Label(
             top,
@@ -454,8 +479,8 @@ class CheburnetApp(tk.Tk):
         top.pack(fill="x", pady=(0, 14))
         self._section_title(top, "Bypass VPN для RU и своих ресурсов")
         note = (
-            "CIDR маршрутизируются напрямую через основной шлюз. Домены сначала резолвятся в IPv4. "
-            "Суффиксы вроде .ru сохраняются как правило профиля, но для route add их нужно превращать в IP-диапазоны."
+            "Здесь можно указать сайты и сети, которые должны идти напрямую (мимо VPN). "
+            "Если не уверены, оставьте значения по умолчанию."
         )
         tk.Label(top, text=note, bg=self.colors["surface"], fg=self.colors["muted"], wraplength=900, justify="left").pack(
             anchor="w", padx=18, pady=(4, 14)
@@ -490,7 +515,7 @@ class CheburnetApp(tk.Tk):
         self.apps_text.insert("1.0", "\n".join(self.store.get("bypass_apps", [])))
         tk.Label(
             apps_card,
-            text="Список приложений сохраняется, но обычный WireGuard/OpenVPN не умеет per-app маршрутизацию без WFP/TUN-драйвера.",
+            text="Список приложений сохраняется для режима 'Туннель сайтов'.",
             bg=self.colors["surface"],
             fg=self.colors["warning"],
             wraplength=360,
@@ -507,23 +532,122 @@ class CheburnetApp(tk.Tk):
 
     def _settings_tab(self) -> tk.Frame:
         frame = self._tab_frame()
-        card = self._card(frame)
-        card.pack(fill="both", expand=True)
-        self._section_title(card, "Настройки")
-        self._button(card, "Переключить тему", self._toggle_theme).pack(anchor="w", padx=18, pady=(8, 14))
+        top = tk.Frame(frame, bg=self.colors["bg"])
+        top.pack(fill="x", pady=(0, 18))
+        self._button(top, "Назад", lambda: self._show_tab("dashboard"), flat=True).pack(side="left")
+        tk.Label(
+            top,
+            text="Настройки",
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            font=("Segoe UI Semibold", 24),
+        ).pack(side="left", padx=14)
+        self._button(top, "Светлая/тёмная тема", self._toggle_theme).pack(side="right")
 
+        grid = tk.Frame(frame, bg=self.colors["bg"])
+        grid.pack(fill="both", expand=True)
+        self.settings_grid = grid
+        grid.columnconfigure(0, weight=1, uniform="settings")
+        grid.columnconfigure(1, weight=1, uniform="settings")
+        grid.rowconfigure(0, weight=1)
+
+        left = tk.Frame(grid, bg=self.colors["bg"])
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right = tk.Frame(grid, bg=self.colors["bg"])
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.settings_left = left
+        self.settings_right = right
+        grid.bind("<Configure>", lambda _event: self._update_settings_layout())
+
+        zapret_card = self._card(left)
+        zapret_card.pack(fill="both", expand=True, pady=(0, 12))
+        self._section_title(zapret_card, "YouTube и Discord")
+        self.zapret_dir_var = tk.StringVar(value=str(self.store.get("zapret_dir", "")))
+        path_row = tk.Frame(zapret_card, bg=self.colors["surface"])
+        path_row.pack(fill="x", padx=18, pady=(10, 10))
+        self._entry(path_row, self.zapret_dir_var).pack(side="left", fill="x", expand=True)
+        self._button(path_row, "Папка", self._browse_zapret_dir).pack(side="left", padx=(8, 0))
+        self._button(path_row, "Скачать", self._download_zapret).pack(side="left", padx=(8, 0))
+        self.config_list = tk.Listbox(
+            zapret_card,
+            height=6,
+            bg=self.colors["entry"],
+            fg=self.colors["text"],
+            selectbackground=self.colors["accent2"],
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+            activestyle="none",
+            font=("Segoe UI", 10),
+        )
+        self.config_list.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+        zapret_actions = tk.Frame(zapret_card, bg=self.colors["surface"])
+        zapret_actions.pack(fill="x", padx=18, pady=(0, 18))
+        self._button(zapret_actions, "Использовать", self._use_selected_zapret_config).pack(side="left", padx=(0, 8))
+        self._button(zapret_actions, "Проверить все", self._test_zapret_configs).pack(side="left", padx=8)
+        self._button(zapret_actions, "Остановить", self._stop_zapret, danger=True).pack(side="left", padx=8)
+
+        vpn_card = self._card(left)
+        vpn_card.pack(fill="both", expand=True)
+        self._section_title(vpn_card, "VPN")
+        self.profile_list = tk.Listbox(
+            vpn_card,
+            height=6,
+            bg=self.colors["entry"],
+            fg=self.colors["text"],
+            selectbackground=self.colors["accent2"],
+            selectforeground="#ffffff",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+            activestyle="none",
+            font=("Segoe UI", 10),
+        )
+        self.profile_list.pack(fill="both", expand=True, padx=18, pady=(10, 10))
+        vpn_actions = tk.Frame(vpn_card, bg=self.colors["surface"])
+        vpn_actions.pack(fill="x", padx=18, pady=(0, 10))
+        self._button(vpn_actions, "WireGuard", self._import_wireguard).pack(side="left", padx=(0, 8))
+        self._button(vpn_actions, "OpenVPN", self._import_openvpn).pack(side="left", padx=8)
+        self._button(vpn_actions, "WARP", self._add_warp_profile).pack(side="left", padx=8)
+        vpn_use = tk.Frame(vpn_card, bg=self.colors["surface"])
+        vpn_use.pack(fill="x", padx=18, pady=(0, 18))
+        self._button(vpn_use, "Использовать", self._use_selected_vpn_profile).pack(side="left", padx=(0, 8))
+        self._button(vpn_use, "Удалить", self._remove_vpn_profile, danger=True).pack(side="left", padx=8)
+        self._button(vpn_use, "Скачать VPN", self._open_vpn_setup).pack(side="left", padx=8)
+
+        tunnel_card = self._card(right)
+        tunnel_card.pack(fill="x", pady=(0, 12))
+        self._section_title(tunnel_card, "Тунелирование")
+        tk.Label(
+            tunnel_card,
+            text="В этом списке сайты идут напрямую. Всё остальное пойдёт через выбранный VPN.",
+            bg=self.colors["surface"],
+            fg=self.colors["muted"],
+            wraplength=430,
+            justify="left",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=18, pady=(10, 12))
+        tunnel_actions = tk.Frame(tunnel_card, bg=self.colors["surface"])
+        tunnel_actions.pack(fill="x", padx=18, pady=(0, 18))
+        self._button(tunnel_actions, "Открыть список сайтов", self._open_direct_sites_file).pack(side="left", padx=(0, 8))
+        self._button(tunnel_actions, "Скачать sing-box", self._download_singbox).pack(side="left", padx=8)
+        self._button(tunnel_actions, "Остановить", self._stop_rule_tunnel, danger=True).pack(side="left", padx=8)
+
+        common_card = self._card(right)
+        common_card.pack(fill="x", pady=(0, 12))
+        self._section_title(common_card, "Запуск")
         self.autostart_zapret_var = tk.BooleanVar(value=bool(self.store.get("autostart_zapret", False)))
         self.autostart_vpn_var = tk.BooleanVar(value=bool(self.store.get("autostart_vpn", False)))
         self.autostart_rule_tunnel_var = tk.BooleanVar(value=bool(self.store.get("autostart_rule_tunnel", False)))
         self.route_persistent_var = tk.BooleanVar(value=bool(self.store.get("route_persistent", False)))
         for text, var in [
-            ("Запускать лучший zapret при старте приложения", self.autostart_zapret_var),
-            ("Подключать выбранный VPN при старте приложения", self.autostart_vpn_var),
-            ("Запускать туннель сайтов через sing-box при старте", self.autostart_rule_tunnel_var),
-            ("Делать route add постоянным (-p)", self.route_persistent_var),
+            ("Включать YouTube и Discord при старте", self.autostart_zapret_var),
+            ("Включать VPN при старте", self.autostart_vpn_var),
+            ("Включать туннелирование при старте", self.autostart_rule_tunnel_var),
         ]:
             tk.Checkbutton(
-                card,
+                common_card,
                 text=text,
                 variable=var,
                 command=self._save_settings_flags,
@@ -533,32 +657,324 @@ class CheburnetApp(tk.Tk):
                 activeforeground=self.colors["text"],
                 selectcolor=self.colors["entry"],
                 font=("Segoe UI", 10),
-            ).pack(anchor="w", padx=18, pady=7)
+            ).pack(anchor="w", padx=18, pady=5)
+        common_actions = tk.Frame(common_card, bg=self.colors["surface"])
+        common_actions.pack(fill="x", padx=18, pady=(8, 18))
+        self._button(common_actions, "Показать гайд", lambda: self._open_onboarding(force=True)).pack(side="left", padx=(0, 8))
+        self._button(common_actions, "Папка настроек", lambda: open_folder(self.store.path.parent)).pack(side="left", padx=8)
 
-        info = self._text(card, height=12)
-        info.pack(fill="x", padx=18, pady=(18, 12))
-        tools = self.vpn.detect_tools()
-        info.insert(
+        log_card = self._card(right)
+        log_card.pack(fill="both", expand=True)
+        self._section_title(log_card, "Последние действия")
+        self.service_log = self._text(log_card, height=8)
+        self.service_log.pack(fill="both", expand=True, padx=18, pady=(10, 18))
+        self.zapret_log = self.service_log
+        self.vpn_status = self.service_log
+        self.rules_log = self.service_log
+        self._ensure_direct_sites_file()
+        self._refresh_configs()
+        self._render_profiles()
+        return frame
+
+    def _guide_tab(self) -> tk.Frame:
+        frame = self._tab_frame()
+        card = self._card(frame)
+        card.pack(fill="both", expand=True)
+        self._section_title(card, "Гайд: с чего начать")
+
+        text = self._text(card, height=16)
+        text.pack(fill="x", padx=18, pady=(8, 12))
+        text.insert(
             "1.0",
             "\n".join(
                 [
-                    f"Настройки: {self.store.path}",
-                    f"WireGuard: {tools['wireguard'] or 'не найден'}",
-                    f"OpenVPN: {tools['openvpn'] or 'не найден'}",
-                    f"WARP CLI: {tools['warp'] or 'не найден'}",
-                    f"sing-box: {self.singbox.detect_binary(str(self.store.get('singbox_path', ''))) or 'не найден'}",
+                    "1) YouTube / Discord",
+                    "- Выберите папку zapret или нажмите 'Скачать latest'.",
+                    "- Нажмите 'Тест всех', затем 'Запуск'.",
                     "",
-                    "Для route add, WireGuard tunnel service и некоторых функций zapret нужны права администратора.",
+                    "2) VPN",
+                    "- Импортируйте WireGuard .conf (или OpenVPN .ovpn).",
+                    "",
+                    "3) Туннель сайтов (по желанию)",
+                    "- Нажмите 'Скачать sing-box'.",
+                    "- Нажмите 'Сгенерировать конфиг' и 'Запустить туннель'.",
+                    "",
+                    "Если не уверены, просто идите по шагам сверху вниз.",
                 ]
             ),
         )
-        info.configure(state="disabled")
-        self._button(card, "Открыть папку настроек", lambda: open_folder(self.store.path.parent)).pack(
-            anchor="w", padx=18, pady=(0, 18)
+        text.configure(state="disabled")
+
+        actions = tk.Frame(card, bg=self.colors["surface"])
+        actions.pack(fill="x", padx=18, pady=(0, 18))
+        self._button(actions, "Открыть YouTube / Discord", lambda: self._show_tab("zapret")).pack(side="left", padx=(0, 8))
+        self._button(actions, "Открыть VPN", lambda: self._show_tab("vpn")).pack(side="left", padx=8)
+        self._button(actions, "Открыть Туннель сайтов", lambda: self._show_tab("rules")).pack(side="left", padx=8)
+        self._button(actions, "Показать гайд первого запуска", lambda: self._open_onboarding(force=True)).pack(
+            side="left", padx=8
         )
         return frame
 
     # TAB_METHODS
+
+    def _mode_row(self, master: tk.Misc, key: str, title: str, description: str) -> tk.Frame:
+        row = self._card(master)
+        row.columnconfigure(0, weight=1)
+
+        text_box = tk.Frame(row, bg=self.colors["surface"])
+        text_box.grid(row=0, column=0, sticky="nsew", padx=22, pady=18)
+        tk.Label(
+            text_box,
+            text=title,
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            font=("Segoe UI Semibold", 17),
+        ).pack(anchor="w")
+        description_label = tk.Label(
+            text_box,
+            text=description,
+            bg=self.colors["surface"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 11),
+            wraplength=620,
+            justify="left",
+        )
+        description_label.pack(anchor="w", pady=(5, 0))
+        self.responsive_labels.append((description_label, row, 150))
+        status = tk.Label(
+            text_box,
+            text="",
+            bg=self.colors["surface"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 10),
+        )
+        status.pack(anchor="w", pady=(10, 0))
+        self.mode_status_labels[key] = status
+
+        switch = tk.Label(row, bg=self.colors["surface"], borderwidth=0, cursor="hand2")
+        switch.grid(row=0, column=1, padx=22, pady=18)
+        switch.bind("<Button-1>", lambda _event, mode=key: self._toggle_mode(mode))
+        self.mode_switches[key] = switch
+        self._draw_switch(switch, False)
+        return row
+
+    def _gear_button(self, master: tk.Misc) -> tk.Label:
+        button = tk.Label(master, bg=self.colors["bg"], borderwidth=0, cursor="hand2")
+        button.configure(image=self._make_gear_image())
+        button.bind("<Button-1>", lambda _event: self._show_tab("settings"))
+        return button
+
+    def _draw_switch(self, widget: tk.Label, enabled: bool) -> None:
+        widget.configure(image=self._make_switch_image(enabled))
+
+    def _make_switch_image(self, enabled: bool) -> tk.PhotoImage:
+        cache_key = f"switch:{self.theme_name}:{enabled}"
+        if cache_key in self.image_cache:
+            return self.image_cache[cache_key]
+        if Image is None or ImageDraw is None or ImageTk is None:
+            image = tk.PhotoImage(width=74, height=40)
+            image.put(self.colors["accent"] if enabled else self.colors["surface2"], to=(0, 0, 74, 40))
+            self.ui_images.append(image)
+            self.image_cache[cache_key] = image
+            return image
+        scale = 4
+        width, height = 74, 40
+        image = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        track = self.colors["accent"] if enabled else self.colors["surface2"]
+        outline = self._blend(track, self.colors["line"], 0.28)
+        shadow = (0, 0, 0, 46) if self.theme_name == "light" else (0, 0, 0, 82)
+        draw.rounded_rectangle((2 * scale, 4 * scale, (width - 2) * scale, (height - 1) * scale), radius=19 * scale, fill=shadow)
+        draw.rounded_rectangle((1 * scale, 1 * scale, (width - 1) * scale, (height - 4) * scale), radius=19 * scale, fill=track, outline=outline, width=1 * scale)
+        knob_x = 40 if enabled else 6
+        draw.ellipse((knob_x * scale, 6 * scale, (knob_x + 28) * scale, 34 * scale), fill="#ffffff", outline=(0, 0, 0, 28), width=1 * scale)
+        small = image.resize((width, height), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(small)
+        self.ui_images.append(photo)
+        self.image_cache[cache_key] = photo
+        return photo
+
+    def _make_gear_image(self) -> tk.PhotoImage:
+        cache_key = f"gear:{self.theme_name}"
+        if cache_key in self.image_cache:
+            return self.image_cache[cache_key]
+        if Image is None or ImageDraw is None or ImageTk is None:
+            image = tk.PhotoImage(width=52, height=52)
+            self.image_cache[cache_key] = image
+            return image
+        scale = 4
+        size = 52
+        image = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((3 * scale, 3 * scale, 49 * scale, 49 * scale), fill=self.colors["surface"], outline=self.colors["line"], width=1 * scale)
+        text = "\u2699"
+        font = self._gear_font(28 * scale)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        x = (size * scale - (bbox[2] - bbox[0])) / 2 - bbox[0]
+        y = (size * scale - (bbox[3] - bbox[1])) / 2 - bbox[1] - 1 * scale
+        draw.text((x, y), text, fill=self.colors["text"], font=font)
+        small = image.resize((size, size), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(small)
+        self.ui_images.append(photo)
+        self.image_cache[cache_key] = photo
+        return photo
+
+    def _gear_font(self, size: int):
+        if ImageFont is None:
+            return None
+        for path in [
+            r"C:\Windows\Fonts\seguisym.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
+            r"C:\Windows\Fonts\arial.ttf",
+        ]:
+            if Path(path).exists():
+                try:
+                    return ImageFont.truetype(path, size=size)
+                except OSError:
+                    pass
+        return ImageFont.load_default()
+
+    def _update_responsive_text(self) -> None:
+        for label, container, reserve in self.responsive_labels:
+            if not label.winfo_exists() or not container.winfo_exists():
+                continue
+            width = max(container.winfo_width() - reserve, 220)
+            try:
+                label.configure(wraplength=width)
+            except tk.TclError:
+                pass
+
+    def _update_settings_layout(self) -> None:
+        if not self.settings_grid or not self.settings_left or not self.settings_right:
+            return
+        if not self.settings_grid.winfo_exists():
+            return
+        width = self.settings_grid.winfo_width()
+        should_stack = width < 900
+        if should_stack == self.settings_stacked:
+            return
+        self.settings_stacked = should_stack
+        if should_stack:
+            self.settings_grid.columnconfigure(0, weight=1, uniform="")
+            self.settings_grid.columnconfigure(1, weight=0, uniform="")
+            self.settings_grid.rowconfigure(0, weight=0)
+            self.settings_grid.rowconfigure(1, weight=1)
+            self.settings_left.grid_configure(row=0, column=0, sticky="nsew", padx=0, pady=(0, 12))
+            self.settings_right.grid_configure(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        else:
+            self.settings_grid.columnconfigure(0, weight=1, uniform="settings")
+            self.settings_grid.columnconfigure(1, weight=1, uniform="settings")
+            self.settings_grid.rowconfigure(0, weight=1)
+            self.settings_grid.rowconfigure(1, weight=0)
+            self.settings_left.grid_configure(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
+            self.settings_right.grid_configure(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0)
+
+    def _toggle_mode(self, mode: str) -> None:
+        if mode == "zapret":
+            if self._is_zapret_running():
+                self._stop_zapret()
+            elif self._zapret_ready():
+                self._start_selected_zapret()
+            else:
+                self._open_zapret_setup()
+            return
+        if mode == "vpn":
+            if self._is_vpn_active():
+                self._disconnect_vpn()
+            else:
+                self._turn_on_vpn_from_main()
+            return
+        if mode == "tunnel":
+            if self._is_tunnel_running():
+                self._stop_rule_tunnel()
+            else:
+                self._turn_on_tunnel_from_main()
+
+    def _refresh_main_status(self) -> None:
+        if not hasattr(self, "mode_switches"):
+            return
+
+        states = {
+            "zapret": self._mode_state("zapret"),
+            "vpn": self._mode_state("vpn"),
+            "tunnel": self._mode_state("tunnel"),
+        }
+        for key, (enabled, label) in states.items():
+            switch = self.mode_switches.get(key)
+            if switch and switch.winfo_exists():
+                self._draw_switch(switch, enabled)
+            status = self.mode_status_labels.get(key)
+            if status and status.winfo_exists():
+                status.configure(text=label, fg=self.colors["accent"] if enabled else self.colors["muted"])
+        if hasattr(self, "dashboard_status") and self.dashboard_status.winfo_exists():
+            self.dashboard_status.configure(text=self._friendly_status_text())
+        if not self.is_closing:
+            if self.status_refresh_job:
+                try:
+                    self.after_cancel(self.status_refresh_job)
+                except tk.TclError:
+                    pass
+            self.status_refresh_job = self.after(2000, self._refresh_main_status)
+
+    def _mode_state(self, mode: str) -> tuple[bool, str]:
+        if mode == "zapret":
+            if self._is_zapret_running():
+                return True, "Включено"
+            return False, "Готово" if self._zapret_ready() else "Нужна настройка"
+        if mode == "vpn":
+            if self._is_vpn_active():
+                profile = self._selected_profile_from_store()
+                name = str(profile.get("name", "VPN")) if profile else "VPN"
+                return True, f"Включено: {name}"
+            return False, "Готово" if self._vpn_ready() else "Нужна настройка"
+        if self._is_tunnel_running():
+            return True, "Включено"
+        return False, "Готово" if self._tunnel_ready() else "Нужна настройка"
+
+    def _friendly_status_text(self) -> str:
+        if not is_admin():
+            return "Windows может один раз попросить права администратора."
+        return "Всё готово к работе."
+
+    def _is_process_running(self, image_name: str) -> bool:
+        if not IS_WINDOWS:
+            return False
+        result = run_command(["tasklist", "/FI", f"IMAGENAME eq {image_name}"], timeout=8)
+        return result.ok and image_name.lower() in result.stdout.lower()
+
+    def _is_zapret_running(self) -> bool:
+        return self._is_process_running("winws.exe")
+
+    def _is_tunnel_running(self) -> bool:
+        process = getattr(self.singbox, "process", None)
+        if process and process.poll() is None:
+            return True
+        return self._is_process_running("sing-box.exe")
+
+    def _is_vpn_active(self) -> bool:
+        return bool(self.store.get("vpn_active_profile", ""))
+
+    def _zapret_ready(self) -> bool:
+        path = str(self.store.get("zapret_dir", "")).strip()
+        return bool(path and self.zapret.discover_configs(path))
+
+    def _vpn_ready(self) -> bool:
+        profile = self._selected_profile_from_store()
+        return bool(profile and self._profile_tool_available(profile))
+
+    def _tunnel_ready(self) -> bool:
+        return bool(self.singbox.detect_binary(str(self.store.get("singbox_path", ""))) and self._selected_rule_profile())
+
+    def _profile_tool_available(self, profile: dict[str, object]) -> bool:
+        protocol = str(profile.get("protocol", "")).lower()
+        tools = self.vpn.detect_tools()
+        if protocol == "warp":
+            return bool(tools["warp"])
+        if protocol == "wireguard":
+            return bool(tools["wireguard"] and Path(str(profile.get("config_path", ""))).exists())
+        if protocol == "openvpn":
+            return bool(tools["openvpn"] and Path(str(profile.get("config_path", ""))).exists())
+        return False
 
     def _tab_frame(self) -> tk.Frame:
         return tk.Frame(self.content, bg=self.colors["bg"])
@@ -639,6 +1055,8 @@ class CheburnetApp(tk.Tk):
         )
 
     def _show_tab(self, key: str) -> None:
+        if key not in self.widgets_by_tab:
+            key = "settings"
         self.current_tab = key
         for frame in self.widgets_by_tab.values():
             frame.pack_forget()
@@ -656,26 +1074,25 @@ class CheburnetApp(tk.Tk):
         best = self.store.get("best_zapret_config") or "не проверен"
         profiles = self.store.get("vpn_profiles", [])
         singbox = "найден" if self.singbox.detect_binary(str(self.store.get("singbox_path", ""))) else "не найден"
+        ready = bool(self.store.get("zapret_dir")) and bool(profiles)
         return "\n".join(
             [
-                f"Права администратора: {'есть' if is_admin() else 'нет'}",
-                f"Zapret папка: {zapret_dir}",
+                f"Статус: {'почти готово' if ready else 'нужна базовая настройка'}",
+                f"Права администратора: {'да' if is_admin() else 'нет'}",
+                f"Папка YouTube/Discord: {zapret_dir}",
                 f"Лучшая стратегия: {best}",
-                f"VPN профилей: {len(profiles)}",
+                f"VPN профилей добавлено: {len(profiles)}",
                 f"sing-box: {singbox}",
-                f"Настройки: {self.store.path}",
             ]
         )
 
     def _dashboard_note_text(self) -> str:
         if not is_admin():
             return (
-                "Сейчас приложение запущено без прав администратора. Для route add, WireGuard tunnel service "
-                "и запуска zapret Windows может показать UAC. Тест zapret запрашивает UAC один раз на весь прогон."
+                "Приложение запущено без прав администратора. Некоторые действия могут попросить подтверждение Windows."
             )
         return (
-            "Права администратора есть. Можно запускать zapret, применять маршруты обхода VPN и подключать "
-            "WireGuard tunnel service без дополнительных запросов UAC."
+            "Права администратора есть. Все основные функции доступны без дополнительных запросов."
         )
 
     def _log(self, message: str, target: tk.Text | None = None) -> None:
@@ -693,13 +1110,302 @@ class CheburnetApp(tk.Tk):
     def _ui_log(self, message: str, target: tk.Text | None = None) -> None:
         self.after(0, lambda: self._log(message, target))
 
-    def _browse_zapret_dir(self) -> None:
-        path = filedialog.askdirectory(title="Папка zapret-discord-youtube")
-        if not path:
+    def _open_zapret_setup(self, parent: tk.Misc | None = None) -> None:
+        win = self._setup_window("YouTube и Discord", parent=parent)
+        status_var = tk.StringVar(value="Выберите один из вариантов ниже.")
+        tk.Label(
+            win,
+            text="Нужно один раз указать zapret или скачать его автоматически.",
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            wraplength=420,
+            justify="left",
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", padx=22, pady=(4, 16))
+        tk.Label(
+            win,
+            textvariable=status_var,
+            bg=self.colors["surface"],
+            fg=self.colors["muted"],
+            wraplength=420,
+            justify="left",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=22, pady=(0, 12))
+
+        actions = tk.Frame(win, bg=self.colors["surface"])
+        actions.pack(fill="x", padx=22, pady=(0, 16))
+        pick_btn = self._button(actions, "Путь до zapret", lambda: self._choose_zapret_from_setup(win, status_var))
+        download_btn = self._button(
+            actions,
+            "Скачать последнюю версию",
+            lambda: self._download_zapret_default(win, status_var, [pick_btn, download_btn, settings_btn]),
+        )
+        settings_btn = self._button(actions, "Открыть настройки", lambda: self._open_settings_from_setup(win), flat=True)
+        pick_btn.pack(fill="x", pady=5)
+        download_btn.pack(fill="x", pady=5)
+        settings_btn.pack(fill="x", pady=5)
+
+    def _choose_zapret_from_setup(self, win: tk.Toplevel, status_var: tk.StringVar | None = None) -> None:
+        if status_var is not None:
+            status_var.set("Открываю выбор папки...")
+        selected = self._pick_zapret_dir(parent=win)
+        if not selected:
+            if status_var is not None:
+                status_var.set("Папка не выбрана.")
             return
-        self.zapret_dir_var.set(path)
+        if self._zapret_ready():
+            if status_var is not None:
+                status_var.set("zapret найден.")
+            self._ask_zapret_config_mode(win)
+        elif status_var is not None:
+            status_var.set("В этой папке не найден zapret. Нужна папка, где есть service.bat и general*.bat.")
+
+    def _download_zapret_default(
+        self,
+        win: tk.Toplevel | None = None,
+        status_var: tk.StringVar | None = None,
+        buttons: list[tk.Button] | None = None,
+    ) -> None:
+        destination = self.store.path.parent / "tools" / "zapret"
+        if status_var is not None:
+            status_var.set("Скачиваю zapret. Это может занять минуту.")
+        for button in buttons or []:
+            button.configure(state="disabled")
+        self._log("Скачиваю zapret...")
+
+        def work() -> None:
+            try:
+                root = self.zapret.download_latest_zip(
+                    destination,
+                    lambda msg: self._ui_zapret_setup_status(status_var, msg),
+                )
+            except Exception as exc:
+                self._ui_zapret_setup_status(status_var, f"Не получилось скачать zapret: {exc}")
+                self.after(0, lambda: [button.configure(state="normal") for button in buttons or [] if button.winfo_exists()])
+                return
+            self.store.set("zapret_dir", str(root))
+
+            def done() -> None:
+                for button in buttons or []:
+                    if button.winfo_exists():
+                        button.configure(state="normal")
+                if hasattr(self, "zapret_dir_var"):
+                    self.zapret_dir_var.set(str(root))
+                self._refresh_configs()
+                self._refresh_main_status()
+                if status_var is not None:
+                    status_var.set("zapret скачан и найден.")
+                if win is not None and win.winfo_exists():
+                    self._ask_zapret_config_mode(win)
+
+            self.after(0, done)
+
+        self._thread(work)
+
+    def _ui_zapret_setup_status(self, status_var: tk.StringVar | None, message: str) -> None:
+        self._ui_log(message, getattr(self, "zapret_log", None))
+        if status_var is not None:
+            self.after(0, lambda: status_var.set(message))
+
+    def _ask_zapret_config_mode(self, win: tk.Toplevel | None = None) -> None:
+        if not self._zapret_ready():
+            messagebox.showwarning("YouTube и Discord", "В этой папке не найден zapret.", parent=win or self)
+            return
+        use_auto = messagebox.askyesno(
+            "Выбор настройки",
+            "Подобрать лучший вариант автоматически?\n\nДа - приложение проверит варианты само.\nНет - выберете вариант в настройках.",
+            parent=win or self,
+        )
+        if win is not None and win.winfo_exists():
+            win.destroy()
+        if use_auto:
+            self._test_zapret_configs(on_done=self._start_selected_zapret)
+        else:
+            self._show_tab("settings")
+
+    def _open_vpn_setup(self, parent: tk.Misc | None = None) -> None:
+        win = self._setup_window("VPN", parent=parent)
+        tools = self.vpn.detect_tools()
+        has_tool = any(bool(path) for path in tools.values())
+        text = (
+            "Сначала установите один VPN-клиент, затем добавьте его конфиг."
+            if not has_tool
+            else "VPN-клиент найден. Добавьте конфиг или выберите уже добавленный профиль."
+        )
+        tk.Label(
+            win,
+            text=text,
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            wraplength=420,
+            justify="left",
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", padx=22, pady=(4, 16))
+
+        installs = tk.Frame(win, bg=self.colors["surface"])
+        installs.pack(fill="x", padx=22, pady=(0, 12))
+        self._button(installs, "Скачать WireGuard", lambda: self._install_vpn_component("wireguard")).pack(fill="x", pady=4)
+        self._button(installs, "Скачать OpenVPN", lambda: self._install_vpn_component("openvpn")).pack(fill="x", pady=4)
+        self._button(installs, "Скачать WARP", lambda: self._install_vpn_component("warp")).pack(fill="x", pady=4)
+
+        imports = tk.Frame(win, bg=self.colors["surface"])
+        imports.pack(fill="x", padx=22, pady=(0, 16))
+        self._button(imports, "Добавить WireGuard config", self._import_wireguard).pack(fill="x", pady=4)
+        self._button(imports, "Добавить OpenVPN config", self._import_openvpn).pack(fill="x", pady=4)
+        self._button(imports, "Добавить WARP", self._add_warp_profile).pack(fill="x", pady=4)
+        self._button(imports, "Открыть настройки", lambda: self._open_settings_from_setup(win), flat=True).pack(fill="x", pady=4)
+
+    def _open_tunnel_setup(self, parent: tk.Misc | None = None) -> None:
+        win = self._setup_window("Тунелирование", parent=parent)
+        tk.Label(
+            win,
+            text="Для этого режима нужен sing-box и WireGuard-конфиг. Список прямых сайтов можно менять обычным txt-файлом.",
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            wraplength=420,
+            justify="left",
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", padx=22, pady=(4, 16))
+        actions = tk.Frame(win, bg=self.colors["surface"])
+        actions.pack(fill="x", padx=22, pady=(0, 16))
+        self._button(actions, "Скачать sing-box", self._download_singbox).pack(fill="x", pady=4)
+        self._button(actions, "Добавить WireGuard config", self._import_wireguard).pack(fill="x", pady=4)
+        self._button(actions, "Открыть список сайтов", self._open_direct_sites_file).pack(fill="x", pady=4)
+        self._button(actions, "Открыть настройки", lambda: self._open_settings_from_setup(win), flat=True).pack(fill="x", pady=4)
+
+    def _setup_window(self, title: str, parent: tk.Misc | None = None) -> tk.Toplevel:
+        owner = parent if parent is not None and parent.winfo_exists() else self
+        win = tk.Toplevel(owner)
+        win._cheburnet_owner = owner  # type: ignore[attr-defined]
+        win.title(title)
+        win.transient(owner)
+        win.resizable(False, False)
+        win.configure(bg=self.colors["surface"])
+        win.geometry("480x360")
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_setup_window(win))
+        tk.Label(
+            win,
+            text=title,
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            font=("Segoe UI Semibold", 20),
+        ).pack(anchor="w", padx=22, pady=(20, 8))
+        win.update_idletasks()
+        self._center_child_window(win, owner)
+        win.lift(owner)
+        win.focus_force()
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        return win
+
+    def _open_settings_from_setup(self, win: tk.Toplevel) -> None:
+        owner = getattr(win, "_cheburnet_owner", None)
+        try:
+            win.grab_release()
+        except tk.TclError:
+            pass
+        if win.winfo_exists():
+            win.destroy()
+        if owner is not None and owner is not self and owner.winfo_exists():
+            try:
+                owner.grab_release()
+            except tk.TclError:
+                pass
+            owner.destroy()
+        self._show_tab("settings")
+        self.lift()
+        self.focus_force()
+
+    def _close_setup_window(self, win: tk.Toplevel) -> None:
+        owner = getattr(win, "_cheburnet_owner", None)
+        try:
+            win.grab_release()
+        except tk.TclError:
+            pass
+        if win.winfo_exists():
+            win.destroy()
+        if owner is not None and owner is not self and owner.winfo_exists():
+            try:
+                owner.grab_set()
+                owner.lift()
+                owner.focus_force()
+            except tk.TclError:
+                pass
+
+    def _center_child_window(self, child: tk.Toplevel, owner: tk.Misc) -> None:
+        try:
+            owner.update_idletasks()
+            child.update_idletasks()
+            owner_x = owner.winfo_rootx()
+            owner_y = owner.winfo_rooty()
+            owner_w = max(owner.winfo_width(), 1)
+            owner_h = max(owner.winfo_height(), 1)
+            child_w = max(child.winfo_width(), child.winfo_reqwidth())
+            child_h = max(child.winfo_height(), child.winfo_reqheight())
+            x = owner_x + max((owner_w - child_w) // 2, 0)
+            y = owner_y + max((owner_h - child_h) // 2, 0)
+            child.geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+
+    def _turn_on_vpn_from_main(self) -> None:
+        if not self._vpn_ready():
+            self._open_vpn_setup()
+            return
+        if self._is_tunnel_running():
+            self._stop_rule_tunnel()
+        self._connect_vpn()
+
+    def _turn_on_tunnel_from_main(self) -> None:
+        if not self.singbox.detect_binary(str(self.store.get("singbox_path", ""))) or not self._selected_rule_profile():
+            self._open_tunnel_setup()
+            return
+        if self._is_vpn_active():
+            self._disconnect_vpn()
+        self._start_rule_tunnel()
+
+    def _ensure_direct_sites_file(self) -> Path:
+        path = self.store.path.parent / "direct-sites.txt"
+        if not path.exists():
+            domains = self.store.get("bypass_domains", [".ru", ".рф", ".su"])
+            path.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        return path
+
+    def _load_direct_sites_file(self) -> None:
+        path = self._ensure_direct_sites_file()
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if lines:
+            self.store.set("bypass_domains", lines)
+
+    def _open_direct_sites_file(self) -> None:
+        path = self._ensure_direct_sites_file()
+        try:
+            if IS_WINDOWS:
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                open_folder(path.parent)
+        except OSError as exc:
+            messagebox.showerror("Список сайтов", f"Не получилось открыть файл: {exc}")
+
+    def _browse_zapret_dir(self) -> None:
+        self._pick_zapret_dir(parent=self)
+
+    def _pick_zapret_dir(self, parent: tk.Misc | None = None) -> bool:
+        path = filedialog.askdirectory(parent=parent, title="Папка zapret-discord-youtube")
+        if not path:
+            return False
+        if hasattr(self, "zapret_dir_var"):
+            self.zapret_dir_var.set(path)
         self.store.set("zapret_dir", path)
         self._refresh_configs()
+        self._refresh_main_status()
+        return True
 
     def _download_zapret(self) -> None:
         destination = filedialog.askdirectory(title="Куда скачать zapret latest release")
@@ -708,33 +1414,41 @@ class CheburnetApp(tk.Tk):
 
         def work() -> None:
             try:
-                root = self.zapret.download_latest_zip(destination, lambda msg: self._ui_log(msg, self.zapret_log))
+                root = self.zapret.download_latest_zip(destination, lambda msg: self._ui_log(msg, getattr(self, "zapret_log", None)))
             except Exception as exc:
-                self._ui_log(f"Ошибка скачивания: {exc}", self.zapret_log)
+                self._ui_log(f"Ошибка скачивания: {exc}", getattr(self, "zapret_log", None))
                 return
             self.store.set("zapret_dir", str(root))
-            self.after(0, lambda: self.zapret_dir_var.set(str(root)))
+            if hasattr(self, "zapret_dir_var"):
+                self.after(0, lambda: self.zapret_dir_var.set(str(root)))
             self.after(0, self._refresh_configs)
-            self._ui_log(f"Готово: {root}", self.zapret_log)
+            self.after(0, self._refresh_main_status)
+            self._ui_log(f"Готово: {root}", getattr(self, "zapret_log", None))
 
         self._thread(work)
 
     def _refresh_configs(self) -> None:
         if not hasattr(self, "config_list"):
             return
-        path = self.zapret_dir_var.get().strip()
+        path = self.zapret_dir_var.get().strip() if hasattr(self, "zapret_dir_var") else str(self.store.get("zapret_dir", ""))
         self.store.set("zapret_dir", path)
         self.config_list.delete(0, "end")
         configs = self.zapret.discover_configs(path) if path else []
         for config in configs:
             self.config_list.insert("end", config.name)
+        selected_name = self.store.get("selected_zapret_config") or self.store.get("best_zapret_config")
+        for index, config in enumerate(configs):
+            if config.name == selected_name:
+                self.config_list.selection_set(index)
+                self.config_list.see(index)
+                break
         if configs:
             self._log(f"Найдено стратегий: {len(configs)}", self.zapret_log)
         else:
-            self._log("Стратегии не найдены. Укажите папку с service.bat и general*.bat.", self.zapret_log)
+            self._log("Стратегии не найдены. Выберите папку zapret или нажмите 'Скачать latest'.", self.zapret_log)
 
     def _selected_zapret_config(self) -> Path | None:
-        path = self.zapret_dir_var.get().strip()
+        path = self.zapret_dir_var.get().strip() if hasattr(self, "zapret_dir_var") else str(self.store.get("zapret_dir", ""))
         configs = self.zapret.discover_configs(path) if path else []
         selected = self.config_list.curselection() if hasattr(self, "config_list") else []
         if selected and configs:
@@ -744,6 +1458,17 @@ class CheburnetApp(tk.Tk):
             if config.name == best:
                 return config
         return configs[0] if configs else None
+
+    def _use_selected_zapret_config(self) -> None:
+        config = self._selected_zapret_config()
+        if not config:
+            messagebox.showwarning("YouTube и Discord", "Сначала выберите папку zapret.")
+            return
+        self.store.set("selected_zapret_config", config.name)
+        self._log(f"Выбрано: {config.name}", getattr(self, "zapret_log", None))
+        if self._is_zapret_running():
+            self._start_selected_zapret()
+        self._refresh_main_status()
 
     def _start_selected_zapret(self) -> None:
         config = self._selected_zapret_config()
@@ -756,6 +1481,7 @@ class CheburnetApp(tk.Tk):
             self.store.set("selected_zapret_config", config.name)
             self._log(f"Запущено: {config.name}", self.zapret_log)
             self._log(f"Zapret запущен: {config.name}")
+            self._refresh_main_status()
         except Exception as exc:
             self._log(f"Ошибка запуска: {exc}", self.zapret_log)
 
@@ -764,13 +1490,14 @@ class CheburnetApp(tk.Tk):
 
     def _stop_zapret(self) -> None:
         result = self.zapret.stop_winws()
-        message = result.text or "winws остановлен или не был запущен."
+        message = result.text if result.ok else "Не получилось выключить YouTube и Discord. Попробуйте запустить приложение от администратора."
         if hasattr(self, "zapret_log"):
             self._log(message, self.zapret_log)
         self._log(message)
+        self._refresh_main_status()
 
-    def _test_zapret_configs(self) -> None:
-        path = self.zapret_dir_var.get().strip()
+    def _test_zapret_configs(self, on_done: Callable[[], None] | None = None) -> None:
+        path = self.zapret_dir_var.get().strip() if hasattr(self, "zapret_dir_var") else str(self.store.get("zapret_dir", ""))
         if not path:
             messagebox.showwarning("Zapret", "Сначала укажите папку zapret.")
             return
@@ -800,7 +1527,11 @@ class CheburnetApp(tk.Tk):
             )
             self._ui_log(f"Лучший конфиг: {best.config} ({best.score} баллов)", self.zapret_log)
             if hasattr(self, "dashboard_status"):
-                self.after(0, lambda: self.dashboard_status.configure(text=self._status_text()))
+                self.after(0, lambda: self.dashboard_status.configure(text=self._friendly_status_text()))
+            self.after(0, self._refresh_configs)
+            self.after(0, self._refresh_main_status)
+            if on_done:
+                self.after(0, on_done)
 
         self._thread(work)
 
@@ -808,8 +1539,12 @@ class CheburnetApp(tk.Tk):
         if not hasattr(self, "profile_list"):
             return
         self.profile_list.delete(0, "end")
-        for profile in self.store.get("vpn_profiles", []):
+        selected_id = self.store.get("selected_vpn_profile")
+        for index, profile in enumerate(self.store.get("vpn_profiles", [])):
             self.profile_list.insert("end", f"{profile.get('name')} [{profile.get('protocol')}]")
+            if profile.get("id") == selected_id:
+                self.profile_list.selection_set(index)
+                self.profile_list.see(index)
 
     def _selected_profile(self) -> dict[str, object] | None:
         profiles = self.store.get("vpn_profiles", [])
@@ -837,7 +1572,8 @@ class CheburnetApp(tk.Tk):
         profiles.append(profile)
         self.store.update({"vpn_profiles": profiles, "selected_vpn_profile": profile["id"]})
         self._render_profiles()
-        self._log(f"Добавлен VPN профиль: {profile['name']}", self.vpn_status)
+        self._log(f"Добавлен VPN профиль: {profile['name']}", getattr(self, "vpn_status", None))
+        self._refresh_main_status()
 
     def _import_wireguard(self) -> None:
         path = filedialog.askopenfilename(
@@ -858,27 +1594,35 @@ class CheburnetApp(tk.Tk):
     def _add_warp_profile(self) -> None:
         self._add_profile("warp", "")
 
+    def _use_selected_vpn_profile(self) -> None:
+        profile = self._selected_profile()
+        if not profile:
+            messagebox.showwarning("VPN", "Сначала добавьте VPN.")
+            return
+        self.store.set("selected_vpn_profile", profile.get("id", ""))
+        self._render_profiles()
+        self._log(f"Выбрано: {profile.get('name')}", getattr(self, "vpn_status", None))
+        self._refresh_main_status()
+
     def _connect_vpn(self) -> None:
         profile = self._selected_profile()
         if not profile:
-            messagebox.showwarning("VPN", "Сначала добавьте VPN профиль.")
+            self._open_vpn_setup()
             return
-        if str(profile.get("protocol", "")).lower() == "wireguard":
-            proceed = messagebox.askyesno(
-                "Системный WireGuard",
-                "Эта кнопка включает обычный full-tunnel WireGuard через Windows. "
-                "Для схемы `.ru напрямую, остальное через VPN` используйте вкладку `Туннель сайтов`, "
-                "а не системное подключение WireGuard.\n\nВсё равно включить системный WireGuard?",
-            )
-            if not proceed:
-                self._show_tab("rules")
-                return
+        if not self._profile_tool_available(profile):
+            self._open_vpn_setup()
+            return
+        if self._is_tunnel_running():
+            self.singbox.stop()
         self.store.set("selected_vpn_profile", profile.get("id", ""))
 
         def work() -> None:
             result = self.vpn.connect(profile)
-            self._ui_log(result.message, self.vpn_status)
+            if result.ok:
+                self.store.set("vpn_active_profile", str(profile.get("id", "")))
+            self._ui_log(result.message, getattr(self, "vpn_status", None))
             self._ui_log(result.message)
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
@@ -889,8 +1633,10 @@ class CheburnetApp(tk.Tk):
 
         def work() -> None:
             result = self.vpn.disconnect(profile)
-            self._ui_log(result.message, self.vpn_status)
+            self.store.set("vpn_active_profile", "")
+            self._ui_log(result.message, getattr(self, "vpn_status", None))
             self._ui_log(result.message)
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
@@ -902,20 +1648,26 @@ class CheburnetApp(tk.Tk):
         removed = profiles.pop(selected[0])
         self.store.update({"vpn_profiles": profiles, "selected_vpn_profile": ""})
         self._render_profiles()
-        self._log(f"Удалён профиль: {removed.get('name')}", self.vpn_status)
+        if self.store.get("vpn_active_profile") == removed.get("id"):
+            self.store.set("vpn_active_profile", "")
+        self._log(f"Удалён профиль: {removed.get('name')}", getattr(self, "vpn_status", None))
+        self._refresh_main_status()
 
     def _refresh_vpn_status(self) -> None:
         if not hasattr(self, "vpn_status"):
             return
         self.vpn_status.configure(state="normal")
-        self.vpn_status.delete("1.0", "end")
-        self.vpn_status.insert("1.0", self.vpn.status())
+        tools = self.vpn.detect_tools()
+        ready = [name for name, path in tools.items() if path]
+        text = "Найдено: " + (", ".join(ready) if ready else "пока ничего")
+        self._log(text, self.vpn_status)
 
     def _install_vpn_component(self, component: str) -> None:
         def work() -> None:
-            result = self.vpn.download_and_run_installer(component, lambda msg: self._ui_log(msg, self.vpn_status))
-            self._ui_log(result.message, self.vpn_status)
+            result = self.vpn.download_and_run_installer(component, lambda msg: self._ui_log(msg, getattr(self, "vpn_status", None)))
+            self._ui_log(result.message, getattr(self, "vpn_status", None))
             self._ui_log(result.message)
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
@@ -926,7 +1678,7 @@ class CheburnetApp(tk.Tk):
         for profile in self.store.get("vpn_profiles", []):
             if str(profile.get("protocol", "")).lower() == "wireguard":
                 return profile
-        return selected
+        return None
 
     def _rule_summary_text(self) -> str:
         domains = self.store.get("bypass_domains", [])
@@ -934,35 +1686,183 @@ class CheburnetApp(tk.Tk):
         apps = self.store.get("bypass_apps", [])
         return "\n".join(
             [
-                "DIRECT, мимо VPN:",
-                "- suffix: .ru, .рф, .su и всё, что добавлено в белый список доменов",
-                "- YouTube / Discord / GoogleVideo / Discord CDN для работы через zapret",
-                f"- CIDR правил: {len(cidrs)}",
-                f"- приложений в direct-списке: {len(apps)}",
+                "Напрямую (без VPN):",
+                "- .ru, .рф, .su и домены из белого списка",
+                "- YouTube и Discord остаются в режиме zapret",
+                f"- сетей (CIDR): {len(cidrs)}",
+                f"- приложений: {len(apps)}",
                 "",
-                "VPN:",
-                "- финальное правило final -> WireGuard outbound",
-                "- всё, что не совпало с DIRECT-правилами",
+                "Через VPN:",
+                "- всё остальное, что не попало в правила выше",
                 "",
-                "Текущие домены:",
+                "Домены из списка:",
                 *(f"- {domain}" for domain in domains[:80]),
                 *([f"... ещё {len(domains) - 80}"] if len(domains) > 80 else []),
             ]
         )
 
+    def _is_first_run(self) -> bool:
+        return not bool(self.store.get("onboarding_done", False)) or int(self.store.get("onboarding_version", 0)) < 2
+
+    def _maybe_show_onboarding(self) -> None:
+        if self._is_first_run():
+            self._open_onboarding(force=True)
+
+    def _open_onboarding(self, force: bool = False) -> None:
+        if not force and not self._is_first_run():
+            return
+        existing = getattr(self, "onboarding_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        steps = [
+            {
+                "title": "Добро пожаловать",
+                "body": "На главном экране всего три переключателя. Если что-то не настроено, CheburNet сам откроет нужную подсказку.",
+                "action": ("Открыть главный экран", "dashboard"),
+            },
+            {
+                "title": "YouTube и Discord",
+                "body": "Включите первый переключатель. Если zapret ещё не выбран, появятся две кнопки: указать папку или скачать последнюю версию.",
+                "action": ("Настроить YouTube и Discord", "zapret_setup"),
+            },
+            {
+                "title": "VPN",
+                "body": "Включите VPN, когда нужен весь интернет через выбранный профиль. Если клиента или конфига нет, приложение попросит добавить.",
+                "action": ("Настроить VPN", "vpn_setup"),
+            },
+            {
+                "title": "Тунелирование",
+                "body": "Этот режим делает так: российские сайты идут напрямую, остальные через VPN. Обычный VPN и тунелирование включаются по очереди.",
+                "action": ("Настроить тунелирование", "tunnel_setup"),
+            },
+        ]
+
+        win = tk.Toplevel(self)
+        self.onboarding_window = win
+        win.title("Первый запуск")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+        win.configure(bg=self.colors["surface"])
+        win.geometry("720x420")
+
+        header = tk.Label(
+            win,
+            text="Быстрый старт",
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            font=("Segoe UI Semibold", 20),
+        )
+        header.pack(anchor="w", padx=22, pady=(18, 6))
+
+        step_var = tk.StringVar()
+        title_var = tk.StringVar()
+        body_var = tk.StringVar()
+
+        tk.Label(
+            win,
+            textvariable=step_var,
+            bg=self.colors["surface"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=22, pady=(0, 6))
+
+        tk.Label(
+            win,
+            textvariable=title_var,
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            font=("Segoe UI Semibold", 14),
+        ).pack(anchor="w", padx=22, pady=(0, 10))
+
+        tk.Label(
+            win,
+            textvariable=body_var,
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            justify="left",
+            wraplength=670,
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", fill="x", padx=22)
+
+        actions = tk.Frame(win, bg=self.colors["surface"])
+        actions.pack(fill="x", padx=22, pady=(18, 10))
+        action_btn = self._button(actions, "Открыть раздел", lambda: None)
+        action_btn.pack(side="left")
+
+        controls = tk.Frame(win, bg=self.colors["surface"])
+        controls.pack(fill="x", padx=22, pady=(8, 18))
+        back_btn = self._button(controls, "Назад", lambda: None, flat=True)
+        back_btn.pack(side="left")
+        next_btn = self._button(controls, "Далее", lambda: None)
+        next_btn.pack(side="left", padx=(8, 0))
+        skip_btn = self._button(controls, "Пропустить", lambda: None, flat=True)
+        skip_btn.pack(side="right")
+
+        state = {"index": 0}
+
+        def close_and_mark_done() -> None:
+            self.store.update({"onboarding_done": True, "onboarding_version": 2})
+            if win.winfo_exists():
+                win.destroy()
+
+        def open_action_tab() -> None:
+            _, tab = steps[state["index"]]["action"]
+            if tab == "zapret_setup":
+                self._open_zapret_setup(parent=win)
+            elif tab == "vpn_setup":
+                self._open_vpn_setup(parent=win)
+            elif tab == "tunnel_setup":
+                self._open_tunnel_setup(parent=win)
+            else:
+                self._show_tab(tab)
+
+        def go_prev() -> None:
+            state["index"] = max(0, state["index"] - 1)
+            render()
+
+        def go_next() -> None:
+            state["index"] = min(len(steps) - 1, state["index"] + 1)
+            render()
+
+        def render() -> None:
+            index = state["index"]
+            item = steps[index]
+            step_var.set(f"Шаг {index + 1} из {len(steps)}")
+            title_var.set(item["title"])
+            body_var.set(item["body"])
+            label, _tab = item["action"]
+            action_btn.configure(text=label, command=open_action_tab)
+            back_btn.configure(state="normal" if index > 0 else "disabled")
+            if index == len(steps) - 1:
+                next_btn.configure(text="Завершить", command=close_and_mark_done)
+            else:
+                next_btn.configure(text="Далее", command=go_next)
+
+        back_btn.configure(command=go_prev)
+        skip_btn.configure(command=close_and_mark_done)
+        win.protocol("WM_DELETE_WINDOW", close_and_mark_done)
+        render()
+
     def _sync_whitelist_widgets(self) -> None:
         if hasattr(self, "domains_text") and hasattr(self, "cidrs_text") and hasattr(self, "apps_text"):
             self._save_whitelist()
+        else:
+            self._load_direct_sites_file()
 
     def _download_singbox(self) -> None:
         def work() -> None:
             try:
-                path = self.singbox.download_latest(lambda msg: self._ui_log(msg, self.rules_log))
+                path = self.singbox.download_latest(lambda msg: self._ui_log(msg, getattr(self, "rules_log", None)))
             except Exception as exc:
-                self._ui_log(f"Ошибка скачивания sing-box: {exc}", self.rules_log)
+                self._ui_log(f"Ошибка скачивания sing-box: {exc}", getattr(self, "rules_log", None))
                 return
             self.store.set("singbox_path", str(path))
-            self._ui_log(f"sing-box установлен: {path}", self.rules_log)
+            self._ui_log("Тунелирование готово к запуску.", getattr(self, "rules_log", None))
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
@@ -988,7 +1888,7 @@ class CheburnetApp(tk.Tk):
                 self.store.get("bypass_apps", []),
             )
         except Exception as exc:
-            self._log(f"Ошибка генерации sing-box: {exc}", self.rules_log)
+            self._log(f"Ошибка настройки туннеля: {exc}", getattr(self, "rules_log", None))
             return None
         self.store.set("last_singbox_config", str(path))
         return path
@@ -1002,7 +1902,7 @@ class CheburnetApp(tk.Tk):
     def _check_rule_config(self) -> None:
         binary = self.singbox.detect_binary(str(self.store.get("singbox_path", "")))
         if not binary:
-            messagebox.showwarning("Туннель сайтов", "Сначала скачайте sing-box.")
+            self._open_tunnel_setup()
             return
         config_path = self.store.get("last_singbox_config") or str(self.singbox.default_config_path())
         if not Path(config_path).exists():
@@ -1014,18 +1914,18 @@ class CheburnetApp(tk.Tk):
         def work() -> None:
             result = self.singbox.check_config(binary, config_path)
             text = result.text or ("Конфиг корректен." if result.ok else "sing-box check вернул ошибку.")
-            self._ui_log(text, self.rules_log)
+            self._ui_log(text, getattr(self, "rules_log", None))
 
         self._thread(work)
 
     def _start_rule_tunnel(self) -> None:
         binary = self.singbox.detect_binary(str(self.store.get("singbox_path", "")))
         if not binary:
-            messagebox.showwarning("Туннель сайтов", "Сначала скачайте sing-box.")
+            self._open_tunnel_setup()
             return
         profile = self._selected_rule_profile()
         if not profile:
-            messagebox.showwarning("Туннель сайтов", "Сначала добавьте WireGuard профиль во вкладке VPN.")
+            self._open_tunnel_setup()
             return
         generated = self._build_rule_config(show_warnings=True)
         if not generated:
@@ -1035,23 +1935,26 @@ class CheburnetApp(tk.Tk):
         def work() -> None:
             check = self.singbox.check_config(binary, config_path)
             if not check.ok:
-                self._ui_log(check.text or "sing-box check не прошёл.", self.rules_log)
+                self._ui_log(check.text or "Туннель не прошёл проверку.", getattr(self, "rules_log", None))
                 return
             if str(profile.get("protocol", "")).lower() == "wireguard":
                 stopped = self.vpn.disconnect(profile)
                 if stopped.ok:
-                    self._ui_log("Системный WireGuard для этого профиля отключён перед запуском sing-box.", self.rules_log)
+                    self.store.set("vpn_active_profile", "")
+                    self._ui_log("Обычный VPN выключен перед тунелированием.", getattr(self, "rules_log", None))
             result = self.singbox.start(binary, config_path)
-            self._ui_log(result.message, self.rules_log)
+            self._ui_log(result.message, getattr(self, "rules_log", None))
             self._ui_log(result.message)
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
     def _stop_rule_tunnel(self) -> None:
         def work() -> None:
             result = self.singbox.stop()
-            self._ui_log(result.message, self.rules_log)
+            self._ui_log(result.message, getattr(self, "rules_log", None))
             self._ui_log(result.message)
+            self.after(0, self._refresh_main_status)
 
         self._thread(work)
 
@@ -1162,6 +2065,7 @@ class CheburnetApp(tk.Tk):
                 profile = self._selected_profile_from_store()
                 if profile:
                     self.vpn.disconnect(profile)
+                self.store.set("vpn_active_profile", "")
             finally:
                 self.after(0, self.destroy)
 

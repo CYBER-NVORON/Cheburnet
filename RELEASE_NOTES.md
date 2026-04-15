@@ -1,22 +1,23 @@
-# Cheburnet v0.1.0
+# Cheburnet v0.2.0
 
 ## Русский
 
-Первый публичный релиз Cheburnet.
+UX-релиз: приложение стало проще для обычного пользователя.
 
 ### Главное
 
-- GUI-приложение для Windows на Python/Tkinter.
-- Zapret для YouTube/Discord через Flowseal `zapret-discord-youtube`.
-- Проверка zapret-стратегий и выбор лучшего конфига.
-- Скрытый запуск `winws.exe` без видимого окна `cmd`.
-- Rule-based туннель сайтов через `sing-box`:
-  - `.ru`, `.рф`, `.su` и пользовательские исключения идут напрямую;
-  - остальной трафик идёт через WireGuard endpoint;
-  - YouTube/Discord остаются direct, чтобы их обрабатывал zapret.
-- WireGuard/OpenVPN/WARP профили и кнопки установки официальных клиентов.
-- Автоскачивание `sing-box`.
-- Сборка в `Cheburnet.exe` с иконкой, metadata и UAC manifest.
+- Новый минималистичный главный экран: только `YouTube и Discord`, `VPN`, `Туннелирование`.
+- Первый запуск теперь объясняет работу приложения простыми шагами.
+- Если режим ещё не настроен, Cheburnet открывает понятное окно настройки:
+  - zapret: выбрать папку или скачать последнюю версию;
+  - VPN: скачать клиент или добавить конфиг;
+  - туннелирование: скачать sing-box, добавить WireGuard config, открыть список сайтов.
+- VPN и туннелирование больше не конфликтуют: включение одного выключает другое.
+- Настройки собраны в одном месте: zapret-конфиг, проверка всех конфигов, VPN-профили, прямые сайты.
+- Добавлен `direct-sites.txt` для доменов, которые идут напрямую.
+- Шестерня и переключатели стали сглаженными, без пиксельного Canvas-рисования.
+- Окно стало адаптивным: можно уменьшать/растягивать, настройки перестраиваются под узкую ширину.
+- Сообщение при остановке zapret теперь нормальное, если `winws.exe` уже выключен.
 
 ### Файл релиза
 
@@ -24,21 +25,22 @@
 
 ## English
 
-First public Cheburnet release.
+UX release: Cheburnet is now easier for non-technical users.
 
 ### Highlights
 
-- Windows Python/Tkinter GUI app.
-- YouTube/Discord zapret integration through Flowseal `zapret-discord-youtube`.
-- Zapret strategy testing and best config selection.
-- Hidden direct `winws.exe` launch without a visible `cmd` window.
-- Rule-based site tunnel through `sing-box`:
-  - `.ru`, `.рф`, `.su` and user exclusions go direct;
-  - the rest goes through the WireGuard endpoint;
-  - YouTube/Discord stay direct so zapret can handle them.
-- WireGuard/OpenVPN/WARP profiles and official client installer buttons.
-- `sing-box` download from the app.
-- `Cheburnet.exe` build with icon, metadata and UAC manifest.
+- New minimal main screen with only three controls: `YouTube and Discord`, `VPN`, `Tunneling`.
+- First-run guide now explains setup in simple steps.
+- If a mode is not configured yet, Cheburnet opens a friendly setup dialog:
+  - zapret: choose a folder or download the latest version;
+  - VPN: download a client or add a config;
+  - tunneling: download sing-box, add a WireGuard config, open the direct-sites list.
+- VPN and tunneling no longer conflict: enabling one disables the other.
+- Settings now collect zapret config selection, config testing, VPN profiles and direct sites in one place.
+- Added `direct-sites.txt` for domains that should go direct.
+- Gear icon and switches are now antialiased instead of pixelated Canvas drawings.
+- Window layout is responsive and can be resized more comfortably.
+- Stopping zapret now shows a friendly message when `winws.exe` is already stopped.
 
 ### Release Asset
 

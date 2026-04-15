@@ -29,8 +29,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "singbox_path": "",
     "last_singbox_config": "",
     "rule_tunnel_enabled": True,
+    "vpn_active_profile": "",
     "last_applied_routes": [],
     "window_geometry": "1180x760",
+    "onboarding_done": False,
+    "onboarding_version": 0,
 }
 
 

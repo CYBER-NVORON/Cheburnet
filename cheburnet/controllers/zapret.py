@@ -247,7 +247,13 @@ class ZapretController:
     def stop_winws(self) -> CommandResult:
         if not IS_WINDOWS:
             return run_command(["pkill", "-f", "winws"], timeout=10)
-        return run_command(["taskkill", "/IM", "winws.exe", "/F"], timeout=10)
+        tasklist = run_command(["tasklist", "/FI", "IMAGENAME eq winws.exe"], timeout=10)
+        if "winws.exe" not in tasklist.stdout.lower():
+            return CommandResult(True, ["taskkill", "/IM", "winws.exe", "/F"], 0, "YouTube и Discord уже выключены.", "")
+        result = run_command(["taskkill", "/IM", "winws.exe", "/F"], timeout=10)
+        if result.ok:
+            return CommandResult(True, result.command, result.code, "YouTube и Discord выключены.", "")
+        return result
 
     def open_original_tests(self, zapret_dir: str | Path) -> subprocess.Popen[str]:
         root = self.find_root(zapret_dir)
