@@ -1,33 +1,38 @@
 # Changelog
 
-## v0.2.0 - 2026-04-15
+## v0.4.0 - 2026-05-28
 
 ### Added
 
-- Minimal main screen with three clear toggles: YouTube/Discord, VPN and tunneling.
-- First-run guide focused on basic user setup.
-- Setup dialogs for zapret, VPN and tunneling when a mode is enabled before it is configured.
-- Settings screen for zapret config selection, VPN profile management and direct-site list editing.
-- Smooth generated icons and switches through Pillow.
-- Responsive window sizing with a smaller minimum size and stacked settings layout on narrow windows.
-- `direct-sites.txt` for user-editable direct domains.
+- Unified `VPN и серверы` section.
+- VPN modes: normal VPN, tunneling, off.
+- Manual VPN URI import, local list import and user-provided URL list import.
+- Embedded WireGuard profile storage after `.conf` import.
+- Zapret config selection with persistent default `.bat`.
+- Zapret config testing with incremental table results and stop button.
+- Hidden direct `winws.exe` launch parsed from Flowseal `.bat` files.
+- Zapret filters: Game filter, IPSet filter, Auto-update check.
+- VPN auto-failover when the selected profile fails.
+- VPN/Zapret autostart from settings.
 
 ### Changed
 
-- Reduced technical text on the main screen.
-- VPN and tunneling are now mutually exclusive from the main controls.
-- Zapret stop messages are now user-friendly when `winws.exe` is already stopped.
-- Closing the app still stops zapret, sing-box tunnel and the selected VPN profile.
+- Removed mandatory bundled public GitHub config sources.
+- Removed stale dashboard journal/quick-actions/traffic chart blocks.
+- Improved table row selection, combo-box arrows and checkbox checkmarks.
+- Health-check errors are logged without blocking modal popups.
 
-## v0.1.0 - 2026-04-15
+### Removed
+
+- Legacy single-file UI and old controller layer.
+- Duplicate root PyInstaller spec and unused sample data.
+
+## v0.3.0 - 2026-05-27
 
 ### Added
 
-- Windows GUI app for managing zapret, VPN profiles and rule-based site tunneling.
-- Flowseal `zapret-discord-youtube` integration with strategy discovery, download and testing.
-- Hidden direct `winws.exe` launch from parsed zapret strategy files.
-- WireGuard/OpenVPN/WARP system profile management and installer buttons.
-- Rule-based site tunnel via `sing-box` TUN with WireGuard `.conf` support.
-- Direct rules for `.ru`, `.рф`, `.su`, user domains, CIDR ranges and selected processes.
-- RU IPv4 range downloader from RIPE delegated stats.
-- Dark/light theme, animated header, persistent settings and Windows `.exe` build.
+- Local sing-box VPN mode from VLESS/VMess/Trojan/Shadowsocks/Hysteria2 configs.
+- PySide6 interface with sidebar, cards, settings, logs and updates.
+- First-run sing-box downloader for the current OS/architecture.
+- WireGuard endpoint-mode support through sing-box.
+- Update screen for Zapret and sing-box.

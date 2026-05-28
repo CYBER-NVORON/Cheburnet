@@ -16,13 +16,13 @@ installers/
 tools/
 
 # Build artifacts
-build/
+build/*
 dist/
 *.toc
 *.pkg
 *.manifest
 *.spec
-!Cheburnet.spec
+!build/cheburnet.spec
 
 # Release binaries and archives
 *.exe
