@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,8 +25,68 @@ from cheburnet.app.app_state import AppState
 from cheburnet.app.models.health import HealthCheckResult, HealthStatus
 from cheburnet.app.models.zapret_status import ZapretStatus
 from cheburnet.app.ui.theme import COLORS
+from cheburnet.app.ui.widgets.flow_layout import FlowLayout
 from cheburnet.app.ui.widgets.glass_card import GlassCard
 from cheburnet.app.ui.widgets.status_pill import StatusPill
+
+
+class SnakeProgress(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.phase = 0.0
+        self.velocity = 0.018
+        self.setMinimumHeight(34)
+        self.setMaximumHeight(34)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+
+    def set_running(self, running: bool) -> None:
+        self.setVisible(running)
+        if running:
+            self.phase = 0.0
+            self.velocity = 0.018
+            self.timer.start(22)
+        else:
+            self.timer.stop()
+        self.update()
+
+    def _tick(self) -> None:
+        wave = (math.sin(self.phase * math.tau * 1.7) + 1.0) / 2.0
+        self.velocity = 0.010 + wave * 0.026
+        self.phase = (self.phase + self.velocity) % 1.0
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(2, 8, -2, -8)
+        track = QColor(COLORS["input"])
+        painter.setPen(QPen(QColor(COLORS["border"]), 1))
+        painter.setBrush(track)
+        painter.drawRoundedRect(rect, 9, 9)
+
+        width = max(1, rect.width())
+        segment_count = 13
+        step = width / segment_count
+        head_x = rect.left() + self.phase * width
+        for index in range(segment_count):
+            offset = index * step * 0.72
+            x = rect.left() + ((head_x - rect.left() - offset) % width)
+            body_phase = index / max(1, segment_count - 1)
+            alpha = int(235 - body_phase * 165)
+            radius = 5.8 - body_phase * 2.0
+            y = rect.center().y() + math.sin((self.phase * 5.0 - body_phase * 2.5) * math.tau) * 2.8
+            color = QColor(COLORS["accent2"] if index < 3 else COLORS["accent"])
+            color.setAlpha(max(70, alpha))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(x, y), radius, radius)
+
+        head = QColor(COLORS["accent2"])
+        painter.setBrush(head)
+        painter.drawEllipse(QPointF(head_x, rect.center().y()), 7, 7)
+        painter.setPen(QPen(QColor(COLORS["bg"]), 1.5))
+        painter.drawPoint(QPointF(head_x + 2.4, rect.center().y() - 2.0))
 
 
 class ZapretPage(QWidget):
@@ -36,7 +96,6 @@ class ZapretPage(QWidget):
     choose_folder_clicked = Signal()
     update_ipset_clicked = Signal()
     update_hosts_clicked = Signal()
-    check_updates_clicked = Signal()
     diagnostics_clicked = Signal()
     check_services_clicked = Signal()
     test_all_clicked = Signal()
@@ -58,6 +117,7 @@ class ZapretPage(QWidget):
         top = QHBoxLayout()
         self.status = QLabel("Zapret не установлен")
         self.status.setObjectName("pageTitle")
+        self.status.setWordWrap(True)
         self.pill = StatusPill("Не установлен", "warn")
         top.addWidget(self.status)
         top.addWidget(self.pill)
@@ -76,47 +136,43 @@ class ZapretPage(QWidget):
         self.script_combo.currentIndexChanged.connect(self._emit_script_changed)
         card.layout.addWidget(self.script_combo)
 
-        options = QHBoxLayout()
+        options = FlowLayout(spacing=10)
         self.game_filter = QComboBox()
         self.game_filter.addItem("Game filter: выключен", "off")
         self.game_filter.addItem("Game filter: TCP", "tcp")
         self.game_filter.addItem("Game filter: UDP", "udp")
         self.game_filter.addItem("Game filter: TCP + UDP", "all")
         self.ipset_filter = QCheckBox("IPSet filter")
-        self.update_check = QCheckBox("Auto-update check")
         save_options = QPushButton("Сохранить фильтры")
         save_options.clicked.connect(lambda _checked=False: self.options_changed.emit(self.options()))
         options.addWidget(self.game_filter)
         options.addWidget(self.ipset_filter)
-        options.addWidget(self.update_check)
         options.addWidget(save_options)
-        options.addStretch(1)
         card.layout.addLayout(options)
 
-        health_row = QHBoxLayout()
+        health_row = FlowLayout(spacing=10)
         self.youtube_pill = StatusPill("YouTube: не проверялось", "neutral")
         self.discord_pill = StatusPill("Discord: не проверялось", "neutral")
         health_row.addWidget(self.youtube_pill)
         health_row.addWidget(self.discord_pill)
-        health_row.addStretch(1)
         card.layout.addLayout(health_row)
 
-        buttons = QHBoxLayout()
+        buttons = FlowLayout(spacing=12)
         for text, signal, obj in [
             ("Скачать / обновить", self.download_clicked, "primary"),
             ("Включить", self.start_clicked, "primary"),
             ("Выключить", self.stop_clicked, "danger"),
-            ("Выбрать папку", self.choose_folder_clicked, ""),
+            ("Папка", self.choose_folder_clicked, ""),
         ]:
             button = QPushButton(text)
-            button.setMinimumWidth(150)
+            button.setMinimumWidth(118)
             if obj:
                 button.setObjectName(obj)
             button.clicked.connect(lambda _checked=False, current_signal=signal: current_signal.emit())
             buttons.addWidget(button)
         card.layout.addLayout(buttons)
 
-        checks = QHBoxLayout()
+        checks = FlowLayout(spacing=12)
         check = QPushButton("Проверить YouTube/Discord")
         check.clicked.connect(lambda _checked=False: self.check_services_clicked.emit())
         test_all = QPushButton("Тест всех конфигов")
@@ -127,7 +183,6 @@ class ZapretPage(QWidget):
         checks.addWidget(check)
         checks.addWidget(test_all)
         checks.addWidget(stop_test)
-        checks.addStretch(1)
         card.layout.addLayout(checks)
 
         self.advanced_toggle = QToolButton()
@@ -146,7 +201,6 @@ class ZapretPage(QWidget):
         service_actions = [
             ("Обновить IPSet", self.update_ipset_clicked),
             ("Обновить hosts", self.update_hosts_clicked),
-            ("Проверить обновления", self.check_updates_clicked),
             ("Диагностика", self.diagnostics_clicked),
         ]
         for index, (text, signal) in enumerate(service_actions):
@@ -159,10 +213,8 @@ class ZapretPage(QWidget):
         layout.addWidget(card)
 
         results = GlassCard("Результаты теста конфигов")
-        self.test_progress = QProgressBar()
-        self.test_progress.setRange(0, 0)
-        self.test_progress.setTextVisible(False)
-        self.test_progress.setVisible(False)
+        self.test_progress = SnakeProgress()
+        self.test_progress.set_running(False)
         results.layout.addWidget(self.test_progress)
         self.test_status = QLabel("Проверка конфигов...")
         self.test_status.setObjectName("muted")
@@ -228,7 +280,6 @@ class ZapretPage(QWidget):
         return {
             "game_filter": self.game_filter.currentData() or "off",
             "ipset_filter": self.ipset_filter.isChecked(),
-            "update_check": self.update_check.isChecked(),
         }
 
     def set_options(self, values: dict[str, object]) -> None:
@@ -236,7 +287,6 @@ class ZapretPage(QWidget):
         if index >= 0:
             self.game_filter.setCurrentIndex(index)
         self.ipset_filter.setChecked(bool(values.get("ipset_filter", False)))
-        self.update_check.setChecked(bool(values.get("update_check", False)))
 
     def set_test_results(self, rows: list[dict[str, object]]) -> None:
         self.results_table.setUpdatesEnabled(False)
@@ -269,7 +319,7 @@ class ZapretPage(QWidget):
             self.results_table.setItem(index, column, item)
 
     def set_test_running(self, running: bool) -> None:
-        self.test_progress.setVisible(running)
+        self.test_progress.set_running(running)
         self.test_status.setVisible(running)
 
     @staticmethod

@@ -5,9 +5,10 @@ from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from cheburnet.app.ui.theme import COLORS
+from cheburnet.app.ui.widgets.flow_layout import FlowLayout
 from cheburnet.app.ui.widgets.glass_card import GlassCard
 from cheburnet.app.ui.widgets.log_console import LogConsole
 
@@ -87,6 +88,8 @@ class UpdateCard(QFrame):
     def __init__(self, title: str) -> None:
         super().__init__()
         self.setObjectName("innerPanel")
+        self.setMinimumWidth(220)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(16)
@@ -113,6 +116,7 @@ class UpdateCard(QFrame):
 
 class UpdatesPage(QWidget):
     check_clicked = Signal()
+    update_app_clicked = Signal()
     update_singbox_clicked = Signal()
     update_zapret_clicked = Signal()
 
@@ -126,32 +130,36 @@ class UpdatesPage(QWidget):
         card = GlassCard("Обновления")
         self.status_label = QLabel("Нажмите проверку версий")
         self.status_label.setObjectName("pageTitle")
+        self.status_label.setWordWrap(True)
         card.layout.addWidget(self.status_label)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
+        self.grid = QGridLayout()
+        self.grid.setHorizontalSpacing(14)
+        self.grid.setVerticalSpacing(14)
         self.cards = {
             "app": UpdateCard("CheburNet"),
             "singbox": UpdateCard("sing-box"),
             "zapret": UpdateCard("Zapret"),
         }
-        for index, widget in enumerate(self.cards.values()):
-            grid.addWidget(widget, 0, index)
-        card.layout.addLayout(grid)
+        self._relayout_cards()
+        card.layout.addLayout(self.grid)
 
-        row = QHBoxLayout()
-        for text, signal, primary in [
-            ("Проверить", self.check_clicked, True),
-            ("sing-box", self.update_singbox_clicked, False),
-            ("Zapret", self.update_zapret_clicked, False),
+        row = FlowLayout(spacing=12)
+        self.action_buttons: dict[str, QPushButton] = {}
+        for key, text, signal, primary in [
+            ("check", "Проверить", self.check_clicked, True),
+            ("app", "CheburNet", self.update_app_clicked, False),
+            ("singbox", "sing-box", self.update_singbox_clicked, False),
+            ("zapret", "Zapret", self.update_zapret_clicked, False),
         ]:
             button = QPushButton(text)
             if primary:
                 button.setObjectName("primary")
             button.clicked.connect(lambda _checked=False, current_signal=signal: current_signal.emit())
+            if key != "check":
+                button.setEnabled(False)
+            self.action_buttons[key] = button
             row.addWidget(button)
-        row.addStretch(1)
         card.layout.addLayout(row)
 
         self.log = LogConsole()
@@ -160,6 +168,9 @@ class UpdatesPage(QWidget):
 
     def set_checking(self) -> None:
         self.status_label.setText("Проверяю версии")
+        for key, button in self.action_buttons.items():
+            if key != "check":
+                button.setEnabled(False)
         for card in self.cards.values():
             card.set_state("checking", "…", "Запрос")
 
@@ -174,6 +185,9 @@ class UpdatesPage(QWidget):
             if status == "warn":
                 warnings += 1
             card.set_state(status, str(item.get("version", "")), str(item.get("note", "")))
+            button = self.action_buttons.get(key)
+            if button:
+                button.setEnabled(status == "warn")
         if errors:
             self.status_label.setText("Есть ошибки проверки")
         elif warnings:
@@ -186,3 +200,19 @@ class UpdatesPage(QWidget):
 
     def append_log(self, line: str) -> None:
         self.log.append_line(line)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._relayout_cards()
+
+    def _relayout_cards(self) -> None:
+        if not hasattr(self, "grid"):
+            return
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item and item.widget():
+                item.widget().setParent(None)
+        width = max(1, self.width())
+        columns = 1 if width < 760 else 2 if width < 1120 else 3
+        for index, widget in enumerate(self.cards.values()):
+            self.grid.addWidget(widget, index // columns, index % columns)

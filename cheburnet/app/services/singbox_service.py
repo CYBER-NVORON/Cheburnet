@@ -63,6 +63,7 @@ class SingBoxService:
             raise ToolInstallError("В latest release sing-box не найден архив для текущей платформы.")
         target_dir = self.default_binary_path().parent
         target_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_old_downloads()
         archive_path = target_dir / str(asset["name"])
         download_file(str(asset["browser_download_url"]), archive_path, progress)
         extract_dir = target_dir / "_extract"
@@ -81,6 +82,7 @@ class SingBoxService:
             target.chmod(0o755)
         archive_path.unlink(missing_ok=True)
         shutil.rmtree(extract_dir)
+        self.cleanup_old_downloads()
         if progress:
             progress(f"sing-box установлен: {target}")
         return target
@@ -115,6 +117,17 @@ class SingBoxService:
 
     def is_running(self) -> bool:
         return bool(self.process_manager.current and self.process_manager.current.is_alive())
+
+    def cleanup_old_downloads(self) -> None:
+        target_dir = self.default_binary_path().parent
+        if not target_dir.exists():
+            return
+        extract_dir = target_dir / "_extract"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        for pattern in ("*.zip", "*.tar.gz", "*.tgz"):
+            for archive in target_dir.glob(pattern):
+                archive.unlink(missing_ok=True)
 
     def _pick_asset(self, assets: Any) -> dict[str, Any] | None:
         if not isinstance(assets, list):

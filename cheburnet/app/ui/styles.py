@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from cheburnet.app.core.paths import app_root
+from cheburnet.app.ui.resources import app_asset_path
 from cheburnet.app.ui.theme import apply_theme
 
 
 def build_qss(theme_key: str | None = None) -> str:
     c = apply_theme(theme_key)
-    chevron = (app_root() / "cheburnet" / "app" / "assets" / "icons" / "chevron-down.svg").as_posix()
-    check = (app_root() / "cheburnet" / "app" / "assets" / "icons" / "check.svg").as_posix()
+    chevron = app_asset_path("icons", "chevron-down.svg").as_posix()
+    check = app_asset_path("icons", "check.svg").as_posix()
     return f"""
     * {{
         font-family: "Segoe UI", "Inter", Arial, sans-serif;
@@ -17,6 +17,10 @@ def build_qss(theme_key: str | None = None) -> str:
     }}
     QMainWindow, QWidget#root, QWidget#page {{
         background: {c["bg"]};
+    }}
+    QScrollArea#pageScroll, QScrollArea#pageScroll > QWidget, QScrollArea#pageScroll > QWidget > QWidget {{
+        background: {c["bg"]};
+        border: 0;
     }}
     QFrame#sidebar {{
         background: {c["sidebar"]};

@@ -129,6 +129,74 @@ def test_zapret_update_extracts_next_to_existing_root(tmp_path, monkeypatch) -> 
     assert service.install_dir() == new_root
 
 
+def test_zapret_update_from_nested_root_uses_sibling_version_dir(tmp_path, monkeypatch) -> None:
+    base = tmp_path / "zapret"
+    old_root = base / "zapret-discord-youtube-1.9.9b" / "zapret-discord-youtube"
+    old_root.mkdir(parents=True)
+    (old_root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9b"\n', encoding="utf-8")
+    (old_root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+    service = ZapretService(old_root)
+
+    monkeypatch.setattr(
+        service,
+        "latest_release",
+        lambda: {
+            "tag_name": "1.9.9c",
+            "assets": [{"name": "zapret.zip", "browser_download_url": "https://example.com/zapret.zip"}],
+        },
+    )
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.download_file", lambda _url, path, _progress=None: path.write_text("zip", encoding="utf-8"))
+
+    def fake_extract(_archive_path, destination):
+        destination.mkdir(parents=True)
+        root = destination / "zapret-discord-youtube"
+        root.mkdir()
+        (root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9c"\n', encoding="utf-8")
+        (root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.extract_archive", fake_extract)
+
+    new_root = service.download_latest()
+
+    assert new_root == base / "zapret-discord-youtube-1.9.9c" / "zapret-discord-youtube"
+    assert old_root not in new_root.parents
+
+
+def test_zapret_update_cleans_old_managed_versions(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEBURNET_HOME", str(tmp_path))
+    base = tmp_path / "tools" / "zapret"
+    old_root = base / "zapret-discord-youtube-1.9.9b" / "zapret-discord-youtube"
+    old_root.mkdir(parents=True)
+    (old_root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9b"\n', encoding="utf-8")
+    (old_root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+    service = ZapretService(old_root)
+
+    monkeypatch.setattr(
+        service,
+        "latest_release",
+        lambda: {
+            "tag_name": "1.9.9c",
+            "assets": [{"name": "zapret.zip", "browser_download_url": "https://example.com/zapret.zip"}],
+        },
+    )
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.download_file", lambda _url, path, _progress=None: path.write_text("zip", encoding="utf-8"))
+
+    def fake_extract(_archive_path, destination):
+        root = destination / "zapret-discord-youtube"
+        root.mkdir(parents=True)
+        (root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9c"\n', encoding="utf-8")
+        (root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.extract_archive", fake_extract)
+
+    service.download_latest()
+
+    assert not old_root.parent.exists()
+    assert (base / "zapret-discord-youtube-1.9.9c").exists()
+
+
 def test_zapret_hidden_script_replaces_visible_start(tmp_path) -> None:
     script = tmp_path / "general.bat"
     script.write_text('start "zapret: %~n0" /min "%BIN%winws.exe" --flag\n', encoding="utf-8")

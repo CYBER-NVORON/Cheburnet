@@ -264,6 +264,7 @@ class ZapretService:
         if not root:
             raise ToolInstallError("Архив zapret распакован, но корень проекта не найден.")
         self._install_dir = root
+        self._cleanup_old_releases(destination, keep=extract_dir)
         if progress:
             progress(f"zapret установлен: {root}")
         return root
@@ -271,12 +272,34 @@ class ZapretService:
     def _download_destination(self) -> Path:
         configured = self._install_dir or tools_dir() / "zapret"
         configured.mkdir(parents=True, exist_ok=True)
+        if configured.name == "zapret-discord-youtube" and configured.parent.name.startswith("zapret-discord-youtube-"):
+            return configured.parent.parent
+        if configured.name.startswith("zapret-discord-youtube-"):
+            return configured.parent
         current_root = self.find_root(configured)
         if current_root and current_root.exists() and ((current_root / "service.bat").exists() or (current_root / "bin").exists()):
             if current_root.resolve() == configured.resolve():
                 return current_root.parent
             return configured
         return configured
+
+    def _cleanup_old_releases(self, destination: Path, keep: Path) -> None:
+        managed_root = tools_dir() / "zapret"
+        try:
+            destination_resolved = destination.resolve()
+            managed_resolved = managed_root.resolve()
+        except OSError:
+            return
+        if destination_resolved != managed_resolved and managed_resolved not in destination_resolved.parents:
+            return
+        keep_resolved = keep.resolve()
+        for child in destination.iterdir():
+            if child.resolve() == keep_resolved:
+                continue
+            if child.is_dir() and child.name.startswith("zapret-discord-youtube-"):
+                shutil.rmtree(child, ignore_errors=True)
+            elif child.is_file() and child.suffix.lower() == ".zip":
+                child.unlink(missing_ok=True)
 
     def available_scripts(self, base: str | Path | None = None) -> list[Path]:
         root = self.find_root(base)

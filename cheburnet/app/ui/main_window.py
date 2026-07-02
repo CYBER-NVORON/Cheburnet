@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -30,6 +31,7 @@ from cheburnet.app.core.config import SettingsStore
 from cheburnet.app.core.logger import AppLogger
 from cheburnet.app.core.paths import app_data_dir, logs_dir
 from cheburnet.app.core.system import is_admin, open_path, relaunch_as_admin
+from cheburnet.app.core.updater import PreparedUpdate, SelfUpdateService, is_newer_version
 from cheburnet.app.models.vpn_status import VpnStatus
 from cheburnet.app.models.zapret_status import ZapretStatus
 from cheburnet.app.services.free_configs_service import FreeConfigsService
@@ -111,7 +113,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CheburNet")
         self.resize(1500, 880)
-        self.setMinimumSize(1120, 720)
+        self.setMinimumSize(860, 560)
         self.setWindowIcon(app_icon())
 
         self.state = AppState()
@@ -121,6 +123,7 @@ class MainWindow(QMainWindow):
         self.log_requested.connect(self.state.add_log)
         self.logger = AppLogger(self.log_requested.emit)
         self.traffic_monitor = TrafficMonitor()
+        self.self_update = SelfUpdateService()
 
         self.singbox = SingBoxService()
         self.zapret_service = ZapretService(self.settings.section("zapret").get("install_dir") or None)
@@ -168,8 +171,15 @@ class MainWindow(QMainWindow):
             "settings": SettingsPage(),
             "updates": UpdatesPage(),
         }
-        for page in self.pages.values():
-            self.stack.addWidget(page)
+        self.page_containers: dict[str, QScrollArea] = {}
+        for key, page in self.pages.items():
+            scroll = QScrollArea()
+            scroll.setObjectName("pageScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setWidget(page)
+            self.stack.addWidget(scroll)
+            self.page_containers[key] = scroll
         self.setStyleSheet(build_qss(str(self.settings.get("theme", "control_deck"))))
         self._show_page("dashboard")
 
@@ -205,7 +215,6 @@ class MainWindow(QMainWindow):
         zapret.choose_folder_clicked.connect(self._choose_zapret_folder)  # type: ignore[attr-defined]
         zapret.update_ipset_clicked.connect(self._update_zapret_ipset)  # type: ignore[attr-defined]
         zapret.update_hosts_clicked.connect(self._update_zapret_hosts)  # type: ignore[attr-defined]
-        zapret.check_updates_clicked.connect(self._check_zapret_updates)  # type: ignore[attr-defined]
         zapret.diagnostics_clicked.connect(self._run_zapret_diagnostics)  # type: ignore[attr-defined]
         zapret.check_services_clicked.connect(self._check_zapret_services)  # type: ignore[attr-defined]
         zapret.test_all_clicked.connect(self._test_zapret_scripts)  # type: ignore[attr-defined]
@@ -221,6 +230,7 @@ class MainWindow(QMainWindow):
         settings.reset_clicked.connect(self._reset_settings)  # type: ignore[attr-defined]
         logs.clear_clicked.connect(self._clear_logs)  # type: ignore[attr-defined]
         updates.check_clicked.connect(self._check_updates)  # type: ignore[attr-defined]
+        updates.update_app_clicked.connect(self._update_app)  # type: ignore[attr-defined]
         updates.update_singbox_clicked.connect(self._update_singbox)  # type: ignore[attr-defined]
         updates.update_zapret_clicked.connect(self._download_zapret)  # type: ignore[attr-defined]
 
@@ -231,6 +241,11 @@ class MainWindow(QMainWindow):
         self.sidebar.set_admin(self.state.is_admin)
         self.logger.info("Приложение запущено")
         self.logger.info(f"Проверка прав администратора: {'OK' if self.state.is_admin else 'нет прав'}")
+        try:
+            self.self_update.cleanup_old_updates()
+            self.singbox.cleanup_old_downloads()
+        except Exception as exc:
+            self.logger.warning(f"Очистка временных файлов обновлений: {exc}")
         self.vpn_controller.load_profiles()
         self._refresh_scripts(check_process=False)
         self._refresh_settings_pages()
@@ -247,7 +262,7 @@ class MainWindow(QMainWindow):
         page = self.pages.get(key)
         if not page:
             return
-        self.stack.setCurrentWidget(page)
+        self.stack.setCurrentWidget(self.page_containers.get(key, page))
         self.sidebar.set_active(key)
         if key == "zapret":
             self._refresh_scripts(check_process=True)
@@ -418,9 +433,6 @@ class MainWindow(QMainWindow):
             return
         self._run_task(lambda _progress: self.zapret_controller.update_hosts_file(), done=self._show_zapret_info)
 
-    def _check_zapret_updates(self) -> None:
-        self._run_task(lambda _progress: self.zapret_controller.check_for_updates(), done=self._show_zapret_info)
-
     def _run_zapret_diagnostics(self) -> None:
         self._run_task(lambda _progress: self.zapret_controller.run_diagnostics(), done=self._show_zapret_info)
 
@@ -551,15 +563,21 @@ class MainWindow(QMainWindow):
                 return text[:80]
 
             data: dict[str, dict[str, str]] = {
-                "app": {"status": "ok", "version": APP_VERSION, "note": "Текущая сборка"},
+                "app": {"status": "neutral", "version": APP_VERSION, "note": "Запрос"},
                 "singbox": {"status": "neutral", "version": "—", "note": "Не проверялось"},
                 "zapret": {"status": "neutral", "version": "—", "note": "Не проверялось"},
             }
+            try:
+                app_info = self.self_update.version_info()
+                data["app"] = {"status": app_info.status, "version": app_info.current, "note": app_info.detail}
+            except Exception as exc:
+                data["app"] = {"status": "error", "version": APP_VERSION, "note": short_error(exc)}
+
             current_singbox = self.singbox.version() or "не установлен"
             try:
                 latest = self.singbox.latest_release()
                 latest_singbox = str(latest.get("tag_name") or latest.get("name") or "latest")
-                status = "ok" if latest_singbox in current_singbox else "warn"
+                status = "warn" if current_singbox == "не установлен" or is_newer_version(latest_singbox, current_singbox) else "ok"
                 data["singbox"] = {
                     "status": status,
                     "version": current_singbox,
@@ -586,6 +604,34 @@ class MainWindow(QMainWindow):
 
         self._run_task(work, done=lambda data: updates.set_versions(dict(data)))  # type: ignore[attr-defined]
 
+    def _update_app(self) -> None:
+        self._run_task(
+            lambda progress: self.self_update.prepare_update(progress),
+            done=self._apply_app_update,
+        )
+
+    def _apply_app_update(self, prepared: PreparedUpdate) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Обновление CheburNet",
+            "Обновление готово. CheburNet закроется, заменит файлы и запустится снова.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.logger.info("Обновление CheburNet подготовлено, установка отложена")
+            return
+        try:
+            self.singbox.stop()
+        except Exception:
+            pass
+        try:
+            self.zapret_service.stop()
+        except Exception:
+            pass
+        self.logger.flush()
+        self.self_update.start_update_and_exit(prepared)
+        QApplication.quit()
+
     def _update_singbox(self) -> None:
         self._run_task(lambda progress: self.singbox.download_latest(progress), done=lambda path: self.logger.info(f"sing-box обновлен: {path}"))
 
@@ -605,9 +651,16 @@ class MainWindow(QMainWindow):
         self.pages["zapret"].set_test_running(True)  # type: ignore[attr-defined]
         self._run_task(
             lambda progress: self.zapret_controller.test_all_scripts(progress),
-            done=lambda rows: (self.pages["zapret"].set_test_results(list(rows)), self.pages["zapret"].set_test_running(False), self._refresh_scripts()),  # type: ignore[attr-defined]
+            done=self._finish_zapret_test,
             failed=lambda message: (self.pages["zapret"].set_test_running(False), self._show_error(message)),  # type: ignore[attr-defined]
         )
+
+    def _finish_zapret_test(self, rows: object) -> None:
+        page = self.pages["zapret"]
+        page.set_test_running(False)  # type: ignore[attr-defined]
+        if page.results_table.rowCount() == 0:  # type: ignore[attr-defined]
+            page.set_test_results(list(rows) if isinstance(rows, list) else [])  # type: ignore[attr-defined]
+        self._refresh_scripts()
 
     def _stop_zapret_test(self) -> None:
         self.zapret_controller.cancel_test()

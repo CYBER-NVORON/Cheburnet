@@ -17,8 +17,7 @@ a = Analysis(
     datas=[
         (str(ROOT / "assets/cheburnet.ico"), "assets"),
         (str(ROOT / "assets/cheburnet.png"), "assets"),
-        (str(ROOT / "cheburnet/app/assets/icons/chevron-down.svg"), "cheburnet/app/assets/icons"),
-        (str(ROOT / "cheburnet/app/assets/icons/check.svg"), "cheburnet/app/assets/icons"),
+        (str(ROOT / "cheburnet/app/assets/icons"), "cheburnet/app/assets/icons"),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

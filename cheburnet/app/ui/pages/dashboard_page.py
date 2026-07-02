@@ -48,6 +48,7 @@ class DashboardPage(QWidget):
         status_row = QHBoxLayout()
         self.vpn_status = QLabel("VPN отключен")
         self.vpn_status.setObjectName("bigStatus")
+        self.vpn_status.setWordWrap(True)
         self.vpn_pill = StatusPill("Не защищено", "warn")
         status_row.addWidget(self.vpn_status)
         status_row.addWidget(self.vpn_pill)
@@ -55,9 +56,11 @@ class DashboardPage(QWidget):
         left.addLayout(status_row)
         self.profile_title = QLabel("Сервер не выбран")
         self.profile_title.setObjectName("pageTitle")
+        self.profile_title.setWordWrap(True)
         left.addWidget(self.profile_title)
         self.profile_detail = QLabel("Добавьте ссылку профиля или WireGuard .conf во вкладке VPN.")
         self.profile_detail.setObjectName("muted")
+        self.profile_detail.setWordWrap(True)
         left.addWidget(self.profile_detail)
         self.routing_mode = QComboBox()
         self.routing_mode.addItem("Обычный VPN", "full_vpn")
@@ -150,16 +153,16 @@ class DashboardPage(QWidget):
     def set_zapret_status(self, status: ZapretStatus) -> None:
         if status == ZapretStatus.RUNNING:
             self.zapret_pill.set_status("ok", "Включен")
-            self.zapret_button.setText("Выключить Zapret")
+            self.zapret_button.setText("Выключить")
         elif status == ZapretStatus.NOT_INSTALLED:
             self.zapret_pill.set_status("warn", "Не установлен")
-            self.zapret_button.setText("Скачать Zapret")
+            self.zapret_button.setText("Скачать")
         elif status == ZapretStatus.ERROR:
             self.zapret_pill.set_status("error", "Ошибка")
             self.zapret_button.setText("Переустановить")
         else:
             self.zapret_pill.set_status("neutral", "Выключен")
-            self.zapret_button.setText("Включить Zapret")
+            self.zapret_button.setText("Включить")
 
     def set_routes(self, routes: dict[str, str]) -> None:
         other = routes.get("other") or "по режиму"
