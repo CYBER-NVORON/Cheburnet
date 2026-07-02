@@ -11,20 +11,19 @@ def test_settings_store_keeps_default_shape_for_legacy_sections(tmp_path) -> Non
 
     store = SettingsStore(path)
 
-    assert isinstance(store.section("free_configs"), dict)
     assert store.section("vpn")["auto_connect"] is True
-    assert store.section("free_configs")["enabled"] is True
+    assert "free_configs" not in store.data
+    assert store.section("free_configs") == {}
 
 
-def test_settings_store_drops_legacy_builtin_sources(tmp_path) -> None:
+def test_settings_store_drops_legacy_profile_lists(tmp_path) -> None:
     path = tmp_path / "settings.json"
-    legacy = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/1.txt"
-    custom = "https://example.com/profiles.txt"
     path.write_text(
-        json.dumps({"free_configs": {"sources": [legacy, custom]}}, ensure_ascii=False),
+        json.dumps({"free_configs": {"sources": ["https://example.com/profiles.txt"]}}, ensure_ascii=False),
         encoding="utf-8",
     )
 
     store = SettingsStore(path)
 
-    assert store.section("free_configs")["sources"] == [custom]
+    assert "free_configs" not in store.data
+    assert "free_configs" not in json.loads(path.read_text(encoding="utf-8"))

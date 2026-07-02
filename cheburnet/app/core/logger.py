@@ -28,6 +28,11 @@ class AppLogger:
         self.sink = sink
         self.path = path or logs_dir() / "cheburnet.log"
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._pending: list[str] = []
+        self._last_flush = time.time()
+        self._flush_interval = 1.0
+        self._flush_limit = 20
+        self._trim_log()
 
     def bind(self, sink: LogSink) -> None:
         self.sink = sink
@@ -49,10 +54,28 @@ class AppLogger:
         if not safe:
             return
         line = f"{time.strftime('%H:%M:%S')}  {level:<7} {safe}"
-        try:
-            with self.path.open("a", encoding="utf-8") as file:
-                file.write(line + "\n")
-        except OSError:
-            pass
+        self._pending.append(line)
+        if level == "ERROR" or len(self._pending) >= self._flush_limit or time.time() - self._last_flush >= self._flush_interval:
+            self.flush()
         if self.sink:
             self.sink(line)
+
+    def flush(self) -> None:
+        if not self._pending:
+            return
+        lines = self._pending
+        self._pending = []
+        self._last_flush = time.time()
+        try:
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+
+    def _trim_log(self, max_bytes: int = 2_000_000) -> None:
+        try:
+            if self.path.exists() and self.path.stat().st_size > max_bytes:
+                text = self.path.read_text(encoding="utf-8", errors="replace")
+                self.path.write_text("\n".join(text.splitlines()[-2000:]) + "\n", encoding="utf-8")
+        except OSError:
+            pass

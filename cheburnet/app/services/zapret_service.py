@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import re
 import shlex
 import shutil
-import re
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from cheburnet.app.constants import ZAPRET_RELEASE_API
+from cheburnet.app.constants import ZAPRET_HOSTS_URL, ZAPRET_IPSET_URL, ZAPRET_RELEASE_API, ZAPRET_VERSION_URL
 from cheburnet.app.core.archive import extract_archive
-from cheburnet.app.core.downloader import download_file, get_json
+from cheburnet.app.core.downloader import download_file, get_json, get_text
 from cheburnet.app.core.paths import tools_dir
 from cheburnet.app.core.process import ProcessManager, run_command
 from cheburnet.app.core.system import IS_WINDOWS
@@ -41,8 +42,103 @@ class ZapretService:
     def latest_release(self) -> dict[str, Any]:
         return get_json(ZAPRET_RELEASE_API, timeout=30)
 
+    def local_version(self, root: str | Path | None = None) -> str:
+        base = Path(root) if root else self.find_root()
+        if not base:
+            return ""
+        service_bat = base / "service.bat"
+        if not service_bat.exists():
+            return ""
+        text = service_bat.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'set\s+"LOCAL_VERSION=([^"]+)"', text, flags=re.IGNORECASE)
+        return match.group(1).strip() if match else ""
+
+    def check_for_updates(self) -> str:
+        local = self.local_version() or "неизвестно"
+        latest = get_text(ZAPRET_VERSION_URL, timeout=10).strip()
+        if not latest:
+            return f"Локальная версия: {local}. Не удалось получить актуальную версию."
+        if local == latest:
+            return f"Zapret актуален: {local}"
+        return f"Доступна новая версия Zapret: {latest}. Установлена: {local}"
+
     def is_installed(self) -> bool:
         return bool(self.find_root() and self.available_scripts())
+
+    def update_ipset_list(self) -> Path:
+        root = self.find_root()
+        if not root:
+            raise RuntimeError("zapret не установлен.")
+        list_file = root / "lists" / "ipset-all.txt"
+        download_file(ZAPRET_IPSET_URL, list_file)
+        return list_file
+
+    def update_hosts_file(self) -> str:
+        if not IS_WINDOWS:
+            raise RuntimeError("Обновление hosts реализовано только для Windows.")
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        hosts_file = Path(system_root) / "System32" / "drivers" / "etc" / "hosts"
+        remote_text = get_text(ZAPRET_HOSTS_URL, timeout=20).strip()
+        if not remote_text:
+            raise RuntimeError("Не удалось скачать hosts из репозитория Flowseal.")
+        hosts_file.parent.mkdir(parents=True, exist_ok=True)
+        current = hosts_file.read_text(encoding="utf-8", errors="replace") if hosts_file.exists() else ""
+        first_line = next((line for line in remote_text.splitlines() if line.strip()), "")
+        last_line = next((line for line in reversed(remote_text.splitlines()) if line.strip()), "")
+        if first_line and last_line and first_line in current and last_line in current:
+            return "hosts уже актуален."
+        backup = hosts_file.with_name("hosts.cheburnet.bak")
+        if hosts_file.exists() and not backup.exists():
+            shutil.copy2(hosts_file, backup)
+        begin = "# CheburNet Flowseal zapret hosts BEGIN"
+        end = "# CheburNet Flowseal zapret hosts END"
+        block = f"{begin}\n{remote_text}\n{end}"
+        pattern = re.compile(rf"{re.escape(begin)}.*?{re.escape(end)}", re.DOTALL)
+        if pattern.search(current):
+            updated = pattern.sub(block, current)
+        else:
+            updated = current.rstrip() + "\n\n" + block + "\n"
+        hosts_file.write_text(updated, encoding="utf-8")
+        return f"hosts обновлён. Резервная копия: {backup}"
+
+    def run_diagnostics(self) -> str:
+        if not IS_WINDOWS:
+            return "Диагностика Flowseal доступна только на Windows."
+        root = self.find_root()
+        lines: list[str] = []
+        lines.append(self._diagnostic_service_running("BFE", "Base Filtering Engine"))
+        proxy = run_command(
+            ["reg", "query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "ProxyEnable"],
+            timeout=5,
+        )
+        lines.append("Proxy: включён" if "0x1" in proxy.stdout else "Proxy: OK")
+        tcp = run_command(["netsh", "interface", "tcp", "show", "global"], timeout=8)
+        if "enabled" in tcp.stdout.lower() and "timestamps" in tcp.stdout.lower():
+            lines.append("TCP timestamps: OK")
+        else:
+            enable = run_command(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"], timeout=10)
+            lines.append("TCP timestamps: включены" if enable.ok else "TCP timestamps: не удалось включить")
+        for process, label in (("AdguardSvc.exe", "Adguard"),):
+            lines.append(f"{label}: найден, может мешать" if self._process_running(process) else f"{label}: OK")
+        for query, label in (
+            ("Killer", "Killer services"),
+            ("Intel", "Intel Connectivity"),
+            ("TracSrvWrapper", "Check Point"),
+            ("SmartByte", "SmartByte"),
+        ):
+            lines.append(f"{label}: найден, может мешать" if self._service_query_contains(query) else f"{label}: OK")
+        if root and not any((root / "bin").glob("*.sys")):
+            lines.append("WinDivert64.sys: не найден")
+        else:
+            lines.append("WinDivert64.sys: OK")
+        vpn = self._service_query_contains("VPN")
+        lines.append("VPN services: найдены, отключите на время Zapret" if vpn else "VPN services: OK")
+        hosts_file = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
+        hosts_text = hosts_file.read_text(encoding="utf-8", errors="replace").lower() if hosts_file.exists() else ""
+        lines.append("hosts: есть записи YouTube, проверьте их" if "youtube.com" in hosts_text or "youtu.be" in hosts_text else "hosts: OK")
+        conflicts = [name for name in ("GoodbyeDPI", "discordfix_zapret", "winws1", "winws2") if self._service_state(name) != "не установлен"]
+        lines.append(f"Конфликтующие службы: {', '.join(conflicts)}" if conflicts else "Конфликтующие службы: не найдены")
+        return "\n".join(lines)
 
     def options(self) -> dict[str, object]:
         root = self.find_root()
@@ -154,7 +250,7 @@ class ZapretService:
         if not zip_asset:
             raise ToolInstallError("В latest release zapret не найден zip-архив.")
         tag = str(release.get("tag_name") or release.get("name") or "latest")
-        destination = self.install_dir()
+        destination = self._download_destination()
         archive_path = destination / str(zip_asset["name"])
         download_file(str(zip_asset["browser_download_url"]), archive_path, progress)
         extract_dir = destination / f"zapret-discord-youtube-{tag}"
@@ -167,9 +263,20 @@ class ZapretService:
         root = self.find_root(extract_dir)
         if not root:
             raise ToolInstallError("Архив zapret распакован, но корень проекта не найден.")
+        self._install_dir = root
         if progress:
             progress(f"zapret установлен: {root}")
         return root
+
+    def _download_destination(self) -> Path:
+        configured = self._install_dir or tools_dir() / "zapret"
+        configured.mkdir(parents=True, exist_ok=True)
+        current_root = self.find_root(configured)
+        if current_root and current_root.exists() and ((current_root / "service.bat").exists() or (current_root / "bin").exists()):
+            if current_root.resolve() == configured.resolve():
+                return current_root.parent
+            return configured
+        return configured
 
     def available_scripts(self, base: str | Path | None = None) -> list[Path]:
         root = self.find_root(base)
@@ -234,6 +341,37 @@ class ZapretService:
             return True
         result = run_command(["pgrep", "-f", "winws"], timeout=5)
         return result.ok
+
+    @staticmethod
+    def _service_state(name: str) -> str:
+        result = run_command(["sc", "query", name], timeout=5)
+        if not result.ok:
+            return "не установлен"
+        text = result.stdout.upper()
+        if "RUNNING" in text:
+            return "запущен"
+        if "STOP_PENDING" in text:
+            return "останавливается"
+        if "START_PENDING" in text:
+            return "запускается"
+        if "STOPPED" in text:
+            return "остановлен"
+        return "найден"
+
+    @classmethod
+    def _diagnostic_service_running(cls, service_name: str, label: str) -> str:
+        state = cls._service_state(service_name)
+        return f"{label}: OK" if state == "запущен" else f"{label}: {state}"
+
+    @staticmethod
+    def _process_running(name: str) -> bool:
+        result = run_command(["tasklist", "/FI", f"IMAGENAME eq {name}"], timeout=5)
+        return result.ok and name.lower() in result.stdout.lower()
+
+    @staticmethod
+    def _service_query_contains(text: str) -> bool:
+        result = run_command(["sc", "query"], timeout=10)
+        return result.ok and text.lower() in result.stdout.lower()
 
     @staticmethod
     def build_winws_command(script: Path) -> tuple[Path, list[str]]:

@@ -22,19 +22,8 @@ def _deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any
     return result
 
 
-def _drop_legacy_default_sources(data: dict[str, Any]) -> None:
-    free_configs = data.get("free_configs")
-    if not isinstance(free_configs, dict):
-        return
-    sources = free_configs.get("sources")
-    if not isinstance(sources, list):
-        return
-    legacy_repo = "goida" + "-vpn-configs"
-    free_configs["sources"] = [
-        source
-        for source in sources
-        if not (legacy_repo in str(source) and "githubmirror" in str(source))
-    ]
+def _drop_legacy_profile_lists(data: dict[str, Any]) -> bool:
+    return data.pop("free_configs", None) is not None
 
 
 class SettingsStore:
@@ -52,7 +41,8 @@ class SettingsStore:
         except (OSError, json.JSONDecodeError):
             loaded = {}
         self.data = _deep_merge(default_settings(), loaded if isinstance(loaded, dict) else {})
-        _drop_legacy_default_sources(self.data)
+        if _drop_legacy_profile_lists(self.data):
+            self.save()
         return self.data
 
     def save(self) -> None:

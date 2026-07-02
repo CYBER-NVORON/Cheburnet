@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -28,11 +29,8 @@ class ServersPage(QWidget):
     disconnect_clicked = Signal()
     routing_mode_changed = Signal(str)
     profile_selected = Signal(str)
-    update_free_clicked = Signal()
     import_wireguard_clicked = Signal()
-    import_list_file_clicked = Signal()
     add_uri_requested = Signal(str)
-    add_subscription_requested = Signal(str)
     delete_clicked = Signal(str)
     check_selected_clicked = Signal(str)
     check_all_clicked = Signal()
@@ -92,10 +90,7 @@ class ServersPage(QWidget):
         buttons.setHorizontalSpacing(12)
         buttons.setVerticalSpacing(12)
         actions = [
-            ("Обновить списки", self.update_free_clicked.emit),
             ("Импорт WireGuard .conf", self.import_wireguard_clicked.emit),
-            ("Импорт списка .txt", self.import_list_file_clicked.emit),
-            ("Добавить URL списка", self._ask_subscription),
             ("Добавить ссылку профиля", self._ask_uri),
             ("Удалить профиль", self._delete_selected),
             ("Проверить выбранный", self._check_selected),
@@ -104,10 +99,10 @@ class ServersPage(QWidget):
         for index, (text, callback) in enumerate(actions):
             button = QPushButton(text)
             button.setMinimumWidth(160)
-            if text == "Обновить списки":
+            if text == "Добавить ссылку профиля":
                 button.setObjectName("primary")
             button.clicked.connect(lambda _checked=False, current_callback=callback: current_callback())
-            buttons.addWidget(button, index // 4, index % 4)
+            buttons.addWidget(button, index // 3, index % 3)
         card.layout.addLayout(buttons)
 
         self.tree = QTreeWidget()
@@ -119,6 +114,9 @@ class ServersPage(QWidget):
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        for column, width in enumerate((42, 380, 110, 260, 80, 120, 150)):
+            self.tree.setColumnWidth(column, width)
         self.tree.itemSelectionChanged.connect(self._emit_selected)
         card.layout.addWidget(self.tree)
         layout.addWidget(card)
@@ -132,27 +130,29 @@ class ServersPage(QWidget):
     def render(self, profiles: list[Profile]) -> None:
         query = self.search.text().lower().strip()
         selected_protocol = self.protocol.currentText().lower()
-        self.tree.clear()
-        for profile in sorted(profiles, key=lambda p: p.latency_ms if p.latency_ms is not None else 999999):
-            if selected_protocol != "все" and profile.protocol.lower() != selected_protocol:
-                continue
-            if query and query not in profile.name.lower() and query not in profile.host.lower() and query not in profile.protocol.lower():
-                continue
-            item = QTreeWidgetItem(
-                [
-                    "★" if profile.favorite else "☆",
-                    profile.name,
-                    profile.protocol.upper(),
-                    profile.endpoint,
-                    f"{profile.latency_ms} ms" if profile.latency_ms is not None else "-",
-                    profile.status,
-                    profile.source,
-                ]
-            )
-            item.setData(0, Qt.ItemDataRole.UserRole, profile.id)
-            self.tree.addTopLevelItem(item)
-        for index in range(self.tree.columnCount()):
-            self.tree.resizeColumnToContents(index)
+        self.tree.setUpdatesEnabled(False)
+        try:
+            self.tree.clear()
+            for profile in sorted(profiles, key=lambda p: p.latency_ms if p.latency_ms is not None else 999999):
+                if selected_protocol != "все" and profile.protocol.lower() != selected_protocol:
+                    continue
+                if query and query not in profile.name.lower() and query not in profile.host.lower() and query not in profile.protocol.lower():
+                    continue
+                item = QTreeWidgetItem(
+                    [
+                        "★" if profile.favorite else "☆",
+                        profile.name,
+                        profile.protocol.upper(),
+                        profile.endpoint,
+                        f"{profile.latency_ms} ms" if profile.latency_ms is not None else "-",
+                        profile.status,
+                        profile.source,
+                    ]
+                )
+                item.setData(0, Qt.ItemDataRole.UserRole, profile.id)
+                self.tree.addTopLevelItem(item)
+        finally:
+            self.tree.setUpdatesEnabled(True)
 
     def set_profile(self, profile: Profile | None) -> None:
         self.profile.setText(profile.name if profile else "Профиль не выбран")
@@ -195,15 +195,6 @@ class ServersPage(QWidget):
         value, ok = QInputDialog.getText(self, "Добавить профиль", "VLESS/VMess/Trojan/SS/Hysteria2 URI:")
         if ok and value.strip():
             self.add_uri_requested.emit(value.strip())
-
-    def _ask_subscription(self) -> None:
-        value, ok = QInputDialog.getText(
-            self,
-            "Добавить URL списка",
-            "HTTP/HTTPS ссылка на txt/base64 список профилей:",
-        )
-        if ok and value.strip():
-            self.add_subscription_requested.emit(value.strip())
 
     def _delete_selected(self) -> None:
         profile_id = self._selected_id()

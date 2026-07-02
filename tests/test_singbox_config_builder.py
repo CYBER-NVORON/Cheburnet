@@ -46,6 +46,25 @@ def test_builder_generates_tun_proxy_config_with_smart_split(tmp_path) -> None:
     assert not any(outbound.get("type") == "block" for outbound in data["outbounds"])
 
 
+def test_builder_full_vpn_ignores_direct_domain_rules(tmp_path) -> None:
+    profile = Profile(
+        id="p1",
+        name="Proxy",
+        protocol="vless",
+        host="example.com",
+        port=443,
+        outbound={"type": "vless", "server": "example.com", "server_port": 443, "uuid": "123e4567-e89b-12d3-a456-426614174000"},
+    )
+
+    settings = default_settings()
+    settings["routing"]["direct_domains"] = [".ru", "vk.com"]
+    path = SingBoxConfigBuilder().build(profile, settings, RoutingMode.FULL_VPN, "1.14.0", tmp_path / "config.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    domain_rules = [rule for rule in data["route"]["rules"] if "domain" in rule or "domain_suffix" in rule]
+    assert domain_rules == []
+
+
 def test_builder_rejects_old_wireguard_endpoint_version(tmp_path) -> None:
     profile = Profile(id="wg", name="WG", protocol="wireguard", config_path=str(tmp_path / "client.conf"))
 

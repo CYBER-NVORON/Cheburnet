@@ -38,22 +38,3 @@ def test_parse_vmess_uri() -> None:
     assert profile.protocol == "vmess"
     assert profile.outbound["tls"]["enabled"] is True
 
-
-def test_fetch_without_user_sources_returns_empty_list() -> None:
-    assert FreeConfigsService().fetch() == []
-
-
-def test_parse_text_imports_user_profile_list() -> None:
-    service = FreeConfigsService()
-    text = "\n".join(
-        [
-            "comment",
-            "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls#One",
-            "trojan://password@example.org:443?security=tls#Two",
-        ]
-    )
-
-    profiles = service.parse_text(text, "local.txt")
-
-    assert [profile.protocol for profile in profiles] == ["vless", "trojan"]
-    assert all(profile.source == "local.txt" for profile in profiles)

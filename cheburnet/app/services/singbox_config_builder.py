@@ -143,7 +143,9 @@ class SingBoxConfigBuilder:
     def _direct_domains(settings: dict[str, Any], mode: RoutingMode) -> list[str]:
         routing = settings.get("routing", {}) if isinstance(settings.get("routing"), dict) else {}
         vpn = settings.get("vpn", {}) if isinstance(settings.get("vpn"), dict) else {}
-        domains = [] if vpn.get("kill_switch") else list(routing.get("direct_domains", []))
+        if vpn.get("kill_switch") or mode == RoutingMode.FULL_VPN:
+            return []
+        domains = list(routing.get("direct_domains", []))
         if mode == RoutingMode.SMART_SPLIT:
             domains.extend(YOUTUBE_DISCORD_DOMAINS)
         return domains

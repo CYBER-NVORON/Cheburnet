@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from cheburnet.app.app_state import AppState
 from cheburnet.app.models.health import HealthCheckResult, HealthStatus
@@ -18,8 +18,6 @@ class DashboardPage(QWidget):
     power_clicked = Signal()
     zapret_clicked = Signal()
     import_wireguard_clicked = Signal()
-    update_free_clicked = Signal()
-    add_subscription_clicked = Signal()
     server_selected = Signal(str)
     routing_mode_changed = Signal(str)
 
@@ -58,7 +56,7 @@ class DashboardPage(QWidget):
         self.profile_title = QLabel("Сервер не выбран")
         self.profile_title.setObjectName("pageTitle")
         left.addWidget(self.profile_title)
-        self.profile_detail = QLabel("Добавьте ссылку профиля, импортируйте .txt список или WireGuard .conf.")
+        self.profile_detail = QLabel("Добавьте ссылку профиля или WireGuard .conf во вкладке VPN.")
         self.profile_detail.setObjectName("muted")
         left.addWidget(self.profile_detail)
         self.routing_mode = QComboBox()
@@ -111,18 +109,16 @@ class DashboardPage(QWidget):
         self.protocol_filter = QComboBox()
         self.protocol_filter.addItems(["Все", "VLESS", "VMess", "Trojan", "SS", "Hysteria2", "WireGuard"])
         self.protocol_filter.currentTextChanged.connect(lambda _text: self.render_servers(self.state.servers))
-        update = QPushButton("Обновить списки")
-        update.clicked.connect(lambda _checked=False: self.update_free_clicked.emit())
-        subscription = QPushButton("URL списка")
-        subscription.clicked.connect(lambda _checked=False: self.add_subscription_clicked.emit())
         row.addWidget(self.search, 1)
         row.addWidget(self.protocol_filter)
-        row.addWidget(update)
-        row.addWidget(subscription)
         servers.layout.addLayout(row)
         self.server_tree = QTreeWidget()
         self.server_tree.setColumnCount(4)
         self.server_tree.setHeaderLabels(["Название", "Протокол", "Пинг", "Статус"])
+        self.server_tree.setUniformRowHeights(True)
+        self.server_tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        for column, width in enumerate((520, 120, 90, 140)):
+            self.server_tree.setColumnWidth(column, width)
         self.server_tree.itemSelectionChanged.connect(self._emit_selected)
         servers.layout.addWidget(self.server_tree)
         layout.addWidget(servers, 1, 0, 1, 3)
@@ -172,7 +168,7 @@ class DashboardPage(QWidget):
     def set_profile(self, profile: Profile | None) -> None:
         if not profile:
             self.profile_title.setText("Сервер не выбран")
-            self.profile_detail.setText("Добавьте ссылку профиля, импортируйте .txt список или WireGuard .conf.")
+            self.profile_detail.setText("Добавьте ссылку профиля или WireGuard .conf во вкладке VPN.")
             self.ping.value.setText("-")
             self.protocol.value.setText("-")
             return
@@ -198,17 +194,20 @@ class DashboardPage(QWidget):
     def render_servers(self, servers: list[Profile]) -> None:
         query = self.search.text().lower().strip() if hasattr(self, "search") else ""
         protocol = self.protocol_filter.currentText().lower() if hasattr(self, "protocol_filter") else "все"
-        self.server_tree.clear()
-        for profile in servers:
-            if protocol != "все" and profile.protocol.lower() != protocol:
-                continue
-            if query and query not in profile.name.lower() and query not in profile.protocol.lower() and query not in profile.host.lower():
-                continue
-            latency = f"{profile.latency_ms} ms" if profile.latency_ms is not None else "-"
-            item = QTreeWidgetItem([profile.name, profile.protocol.upper(), latency, profile.status])
-            item.setData(0, Qt.ItemDataRole.UserRole, profile.id)
-            self.server_tree.addTopLevelItem(item)
-        self.server_tree.resizeColumnToContents(0)
+        self.server_tree.setUpdatesEnabled(False)
+        try:
+            self.server_tree.clear()
+            for profile in servers:
+                if protocol != "все" and profile.protocol.lower() != protocol:
+                    continue
+                if query and query not in profile.name.lower() and query not in profile.protocol.lower() and query not in profile.host.lower():
+                    continue
+                latency = f"{profile.latency_ms} ms" if profile.latency_ms is not None else "-"
+                item = QTreeWidgetItem([profile.name, profile.protocol.upper(), latency, profile.status])
+                item.setData(0, Qt.ItemDataRole.UserRole, profile.id)
+                self.server_tree.addTopLevelItem(item)
+        finally:
+            self.server_tree.setUpdatesEnabled(True)
 
     def _emit_selected(self) -> None:
         item = self.server_tree.currentItem()

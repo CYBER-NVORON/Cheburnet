@@ -3,79 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import urllib.parse
-from typing import Iterable
 
 from cheburnet.app.constants import FREE_CONFIG_SCHEMES
-from cheburnet.app.core.downloader import get_text
 from cheburnet.app.models.profile import Profile
 
 
 class FreeConfigsService:
-    def fetch(self, sources: Iterable[str] | None = None, limit_per_source: int = 80) -> list[Profile]:
-        source_list = [str(source).strip() for source in (sources or []) if str(source).strip()]
-        if not source_list:
-            return []
-        profiles: list[Profile] = []
-        seen: set[str] = set()
-        for source in source_list:
-            try:
-                text = get_text(source)
-            except Exception:
-                continue
-            for profile in self.parse_text(text, source, limit=limit_per_source):
-                if profile.id not in seen:
-                    seen.add(profile.id)
-                    profiles.append(profile)
-        return profiles
-
-    def parse_text(self, text: str, source: str = "manual", limit: int | None = None) -> list[Profile]:
-        profiles: list[Profile] = []
-        seen: set[str] = set()
-        for link in self.extract_links(text):
-            profile = self.parse_link(link, source)
-            if not profile or profile.id in seen:
-                continue
-            seen.add(profile.id)
-            profiles.append(profile)
-            if limit is not None and len(profiles) >= limit:
-                break
-        return profiles
-
-    def extract_links(self, text: str) -> list[str]:
-        chunks = [text]
-        if "://" not in text:
-            decoded = self._decode_base64_text(text)
-            if decoded:
-                chunks.append(decoded)
-        for line in text.splitlines():
-            stripped = line.strip()
-            if "://" in stripped or len(stripped) < 32:
-                continue
-            decoded = self._decode_base64_text(stripped)
-            if decoded:
-                chunks.append(decoded)
-
-        links: list[str] = []
-        seen: set[str] = set()
-        for chunk in chunks:
-            for raw in chunk.replace("\r", "\n").splitlines():
-                value = raw.strip()
-                if not value:
-                    continue
-                if not value.startswith(FREE_CONFIG_SCHEMES):
-                    for scheme in FREE_CONFIG_SCHEMES:
-                        index = value.find(scheme)
-                        if index >= 0:
-                            value = value[index:]
-                            break
-                if not value.startswith(FREE_CONFIG_SCHEMES):
-                    continue
-                value = value.split()[0].strip()
-                if value and value not in seen:
-                    seen.add(value)
-                    links.append(value)
-        return links
-
     def parse_link(self, link: str, source: str = "") -> Profile | None:
         link = link.strip()
         try:

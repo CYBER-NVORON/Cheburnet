@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
 
 from cheburnet.app.app_state import AppState
 from cheburnet.app.core.config import SettingsStore
@@ -20,6 +21,8 @@ from cheburnet.app.services.singbox_service import SingBoxService
 from cheburnet.app.services.wireguard_importer import WireGuardImporter
 
 Progress = Callable[[str], None]
+PROFILE_CHECK_CACHE_SEC = 10 * 60
+MAX_PROFILE_CHECK_WORKERS = 3
 
 
 class VpnController:
@@ -80,73 +83,81 @@ class VpnController:
         self.logger.info(f"Добавлен профиль: {profile.name}")
         return profile
 
-    def import_profile_list_text(self, text: str, source: str = "file") -> list[Profile]:
-        profiles = self.free_configs.parse_text(text, source)
-        if not profiles:
-            raise CheburNetError("В списке не найдены поддерживаемые профили.")
-        for profile in profiles:
-            profile.source = source
-            profile.status = "unchecked"
-        self.profiles.upsert_many(profiles)
-        items = self.profiles.all()
-        self.state.set_servers(items)
-        if not self.state.selected_profile:
-            self.select_profile(profiles[0].id)
-        self.logger.info(f"Импортировано профилей: {len(profiles)}")
-        return profiles
-
-    def add_subscription_source(self, url: str) -> str:
-        parsed = urlparse(url.strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise CheburNetError("Подписка должна быть http/https ссылкой.")
-        section = self.settings.section("free_configs")
-        sources = [str(item).strip() for item in section.get("sources", []) if str(item).strip()]
-        if url not in sources:
-            sources.append(url)
-        self.settings.update({"free_configs": {"sources": sources}})
-        self.logger.info(f"Добавлена подписка: {url}")
-        return url
-
-    def update_free_configs(self, progress: Progress | None = None) -> list[Profile]:
-        section = self.settings.section("free_configs")
-        sources = [str(item).strip() for item in section.get("sources", []) if str(item).strip()]
-        if not sources:
-            raise CheburNetError("Добавьте URL списка профилей перед обновлением.")
-        if progress:
-            progress("Загружаю профили из пользовательских списков")
-        profiles = self.free_configs.fetch(sources=sources)
-        for profile in profiles:
-            profile.source = "user-list"
-            profile.status = "unchecked"
-        self.profiles.upsert_many(profiles)
-        self.state.set_servers(self.profiles.all())
-        self.logger.info(f"Профили из пользовательских списков загружены: {len(profiles)}")
-        if profiles:
-            binary = self.singbox.ensure_installed(progress=progress)
-            version = self.singbox.version(binary)
-            for index, profile in enumerate(profiles, start=1):
-                if progress:
-                    progress(f"Проверяю профиль {index}/{len(profiles)}: {profile.name}")
-                self.check_profile(profile, binary=binary, version=version, progress=progress)
-            self._sort_profiles()
-        return profiles
-
     def check_profile(
         self,
         profile: Profile,
         binary: Path | None = None,
         version: str | None = None,
         progress: Progress | None = None,
+        force: bool = True,
     ) -> Profile:
+        if not force and self._has_recent_check(profile):
+            return profile
         if binary is None:
             binary = self.singbox.ensure_installed(progress=progress)
         if version is None:
             version = self.singbox.version(binary)
         profile = self.healthcheck.check_profile_with_singbox(profile, binary, self.builder, self.settings.data, version, progress)
-        self.profiles.upsert(profile)
+        profile.meta["last_checked_at"] = time.time()
+        self.profiles.upsert(profile, save=False)
         self._sort_profiles()
         self.logger.info(f"Проверка {profile.name}: {profile.status} {profile.latency_ms or '-'} ms")
         return profile
+
+    def check_profiles(
+        self,
+        profiles: list[Profile],
+        progress: Progress | None = None,
+        force: bool = False,
+        max_workers: int = MAX_PROFILE_CHECK_WORKERS,
+    ) -> list[Profile]:
+        pending = [profile for profile in profiles if force or not self._has_recent_check(profile)]
+        skipped = len(profiles) - len(pending)
+        if skipped and progress:
+            progress(f"Пропущено недавно проверенных профилей: {skipped}")
+        if not pending:
+            return profiles
+
+        binary = self.singbox.ensure_installed(progress=progress)
+        version = self.singbox.version(binary)
+        checked: list[Profile] = []
+        worker_count = max(1, min(max_workers, len(pending)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(self._check_profile_probe, Profile.from_dict(profile.to_dict()), binary, version): profile
+                for profile in pending
+            }
+            for index, future in enumerate(as_completed(futures), start=1):
+                profile = futures[future]
+                if progress:
+                    progress(f"Проверка профилей {index}/{len(pending)}: {profile.name}")
+                try:
+                    checked.append(future.result())
+                except Exception as exc:
+                    profile.status = "failed"
+                    profile.meta["last_check_detail"] = str(exc)
+                    profile.meta["last_checked_at"] = time.time()
+                    checked.append(profile)
+
+        self.profiles.upsert_many(checked, save=False)
+        self._sort_profiles()
+        self.logger.info(f"Проверено профилей: {len(checked)}; пропущено по кешу: {skipped}")
+        return checked
+
+    def _check_profile_probe(self, profile: Profile, binary: Path, version: str) -> Profile:
+        checked = self.healthcheck.check_profile_with_singbox(profile, binary, self.builder, self.settings.data, version, None)
+        checked.meta["last_checked_at"] = time.time()
+        return checked
+
+    @staticmethod
+    def _has_recent_check(profile: Profile, ttl: int = PROFILE_CHECK_CACHE_SEC) -> bool:
+        if profile.status == "unchecked":
+            return False
+        try:
+            checked_at = float(profile.meta.get("last_checked_at", 0))
+        except (TypeError, ValueError):
+            return False
+        return checked_at > 0 and time.time() - checked_at < ttl
 
     def connect_selected_profile(self, progress: Progress | None = None) -> None:
         self.cancel_requested = False
@@ -183,7 +194,7 @@ class VpnController:
                         pass
                     candidate.status = "failed"
                     candidate.meta["last_connect_error"] = last_error
-                    self.profiles.upsert(candidate)
+                    self.profiles.upsert(candidate, save=False)
                     self._sort_profiles()
                     if not auto_failover or index == len(candidates):
                         raise
@@ -230,7 +241,7 @@ class VpnController:
             raise CheburNetError(f"VPN health-check не прошёл: {ready.detail}")
         profile.status = "online"
         profile.latency_ms = ready.latency_ms
-        self.profiles.upsert(profile)
+        self.profiles.upsert(profile, save=False)
         self.settings.set("selected_profile_id", profile.id)
         self.state.set_selected_profile(profile)
         self._sort_profiles()
@@ -286,7 +297,7 @@ class VpnController:
         elif mode == RoutingMode.CUSTOM_SPLIT:
             self.state.set_routes({"youtube": "по правилам", "discord": "по правилам", "other": "VPN + direct exceptions"})
         else:
-            self.state.set_routes({"youtube": "VPN", "discord": "VPN", "other": "VPN + direct exceptions"})
+            self.state.set_routes({"youtube": "VPN", "discord": "VPN", "other": "VPN"})
 
     def _sort_profiles(self) -> None:
         priority = {"online": 0, "unstable": 1, "unchecked": 2, "failed": 3, "syntax_error": 4, "tcp_failed": 5}

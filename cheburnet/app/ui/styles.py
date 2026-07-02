@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from cheburnet.app.core.paths import app_root
-from cheburnet.app.ui.theme import COLORS
+from cheburnet.app.ui.theme import apply_theme
 
 
-def build_qss() -> str:
-    c = COLORS
+def build_qss(theme_key: str | None = None) -> str:
+    c = apply_theme(theme_key)
     chevron = (app_root() / "cheburnet" / "app" / "assets" / "icons" / "chevron-down.svg").as_posix()
     check = (app_root() / "cheburnet" / "app" / "assets" / "icons" / "check.svg").as_posix()
     return f"""
@@ -20,7 +20,7 @@ def build_qss() -> str:
     }}
     QFrame#sidebar {{
         background: {c["sidebar"]};
-        border-right: 1px solid #1C2547;
+        border-right: 1px solid {c["border"]};
     }}
     QLabel#brand {{
         font-size: 20px;
@@ -55,7 +55,7 @@ def build_qss() -> str:
         border: 1px solid {c["border"]};
         border-radius: 16px;
     }}
-    QPushButton {{
+    QPushButton, QToolButton {{
         background: {c["card_inner"]};
         border: 1px solid {c["border"]};
         border-radius: 15px;
@@ -63,24 +63,24 @@ def build_qss() -> str:
         font-weight: 700;
         min-height: 24px;
     }}
-    QPushButton:hover {{
+    QPushButton:hover, QToolButton:hover {{
         border-color: {c["accent"]};
-        background: #202A50;
+        background: {c["hover"]};
     }}
-    QPushButton:pressed {{
-        background: #263160;
+    QPushButton:pressed, QToolButton:pressed {{
+        background: {c["border"]};
     }}
     QPushButton:disabled {{
         color: #66718E;
-        background: #10172D;
-        border-color: #1B2442;
+        background: {c["input"]};
+        border-color: {c["border"]};
     }}
     QPushButton#primary {{
         background: {c["accent"]};
-        border-color: #9B85FF;
+        border-color: {c["accent"]};
     }}
     QPushButton#primary:hover {{
-        background: #8D72FF;
+        background: {c["hover"]};
     }}
     QPushButton#danger {{
         background: rgba(255, 77, 109, 0.18);
@@ -93,11 +93,11 @@ def build_qss() -> str:
         border-radius: 12px;
         background: transparent;
         border: 1px solid transparent;
-        color: #C9D3F5;
+        color: {c["text"]};
     }}
     QPushButton#navButton[active="true"] {{
         background: {c["accent"]};
-        border-color: #8E79FF;
+        border-color: {c["accent"]};
         color: #FFFFFF;
     }}
     QLabel#statusPill {{
@@ -123,7 +123,7 @@ def build_qss() -> str:
         color: {c["warning"]};
     }}
     QLineEdit, QComboBox, QTextEdit, QPlainTextEdit {{
-        background: #0D1430;
+        background: {c["input"]};
         border: 1px solid {c["border"]};
         border-radius: 12px;
         padding: 9px 12px;
@@ -136,24 +136,25 @@ def build_qss() -> str:
         subcontrol-origin: padding;
         subcontrol-position: top right;
         width: 34px;
-        border-left: 1px solid #22305D;
+        border-left: 1px solid {c["border"]};
         border-top-right-radius: 12px;
         border-bottom-right-radius: 12px;
-        background: #111936;
+        background: {c["card_inner"]};
     }}
     QComboBox::drop-down:hover {{
-        background: #18213D;
+        background: {c["hover"]};
     }}
     QComboBox::down-arrow {{
         image: url("{chevron}");
         width: 12px;
         height: 8px;
+        margin-right: 11px;
     }}
     QTreeWidget, QTableWidget, QListWidget {{
         background: transparent;
         border: 0;
         outline: 0;
-        gridline-color: #22305D;
+        gridline-color: {c["border"]};
         alternate-background-color: rgba(255, 255, 255, 0.025);
     }}
     QTreeWidget::item, QTableWidget::item, QListWidget::item {{
@@ -166,19 +167,30 @@ def build_qss() -> str:
         color: #FFFFFF;
     }}
     QHeaderView::section {{
-        background: #111936;
+        background: {c["card_inner"]};
         border: 0;
         border-bottom: 1px solid {c["border"]};
         color: {c["muted"]};
         font-weight: 700;
         padding: 8px;
     }}
+    QProgressBar {{
+        background: {c["input"]};
+        border: 1px solid {c["border"]};
+        border-radius: 8px;
+        min-height: 10px;
+        max-height: 10px;
+    }}
+    QProgressBar::chunk {{
+        background: {c["accent2"]};
+        border-radius: 8px;
+    }}
     QScrollBar:vertical {{
         width: 10px;
         background: transparent;
     }}
     QScrollBar::handle:vertical {{
-        background: #2B386A;
+        background: {c["border"]};
         border-radius: 5px;
     }}
     QCheckBox {{
@@ -190,18 +202,54 @@ def build_qss() -> str:
         height: 18px;
         border-radius: 6px;
         border: 1px solid {c["border"]};
-        background: #0D1430;
+        background: {c["input"]};
     }}
     QCheckBox::indicator:hover {{
         border-color: {c["accent"]};
-        background: #172040;
+        background: {c["hover"]};
     }}
     QCheckBox::indicator:checked {{
         background: {c["accent"]};
-        border-color: #A18EFF;
+        border-color: {c["accent"]};
         image: url("{check}");
     }}
     QCheckBox::indicator:checked:hover {{
-        background: #8D72FF;
+        background: {c["hover"]};
+    }}
+    QLabel#updateIcon {{
+        font-size: 34px;
+        font-weight: 900;
+        min-width: 52px;
+        max-width: 52px;
+        min-height: 52px;
+        max-height: 52px;
+        border-radius: 16px;
+        qproperty-alignment: AlignCenter;
+        background: rgba(94, 240, 170, 0.12);
+        border: 1px solid rgba(94, 240, 170, 0.45);
+        color: {c["accent2"]};
+    }}
+    QLabel#updateIcon[status="warn"] {{
+        background: rgba(255, 209, 102, 0.13);
+        border-color: rgba(255, 209, 102, 0.48);
+        color: {c["warning"]};
+    }}
+    QLabel#updateIcon[status="error"] {{
+        background: rgba(255, 85, 115, 0.13);
+        border-color: rgba(255, 85, 115, 0.48);
+        color: {c["danger"]};
+    }}
+    QLabel#updateTitle {{
+        font-size: 17px;
+        font-weight: 900;
+    }}
+    QLabel#updateVersion {{
+        font-size: 22px;
+        font-weight: 900;
+    }}
+    QLabel#miniLabel {{
+        color: {c["muted"]};
+        font-size: 12px;
+        font-weight: 800;
     }}
     """

@@ -45,6 +45,12 @@ class HealthcheckService:
                     if 200 <= code < 500:
                         return HealthCheckResult(target, HealthStatus.OK, f"HTTP {code}", latency)
                     last_error = f"HTTP {code}"
+            except urllib.error.HTTPError as exc:
+                code = int(exc.code)
+                latency = int((time.perf_counter() - started) * 1000)
+                if 200 <= code < 500:
+                    return HealthCheckResult(target, HealthStatus.OK, f"HTTP {code}", latency)
+                last_error = f"HTTP {code}"
             except TimeoutError:
                 return HealthCheckResult(target, HealthStatus.TIMEOUT, "Таймаут проверки")
             except urllib.error.URLError as exc:

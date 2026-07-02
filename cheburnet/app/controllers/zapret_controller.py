@@ -51,10 +51,10 @@ class ZapretController:
         self.healthcheck = healthcheck or HealthcheckService()
         self.test_cancel_requested = False
 
-    def refresh_status(self) -> ZapretStatus:
+    def refresh_status(self, check_process: bool = True) -> ZapretStatus:
         if not self.service.is_installed():
             status = ZapretStatus.NOT_INSTALLED
-        elif self.service.is_running():
+        elif check_process and self.service.is_running():
             status = ZapretStatus.RUNNING
         else:
             status = ZapretStatus.STOPPED
@@ -102,10 +102,39 @@ class ZapretController:
         return root
 
     def download_or_update(self, progress: Progress | None = None) -> Path:
+        previous_selected = str(self.settings.section("zapret").get("selected_script") or "")
         root = self.service.download_latest(progress=progress)
+        selected_name = Path(previous_selected).name if previous_selected else ""
+        next_selected = None
+        if selected_name:
+            next_selected = next((script for script in self.service.available_scripts(root) if script.name == selected_name), None)
+        self.settings.update({"zapret": {"install_dir": str(root), "selected_script": str(next_selected) if next_selected else None}})
         self.state.set_zapret_status(ZapretStatus.STOPPED)
         self.logger.info(f"Zapret установлен: {root}")
         return root
+
+    def update_ipset_list(self) -> str:
+        path = self.service.update_ipset_list()
+        message = f"IPSet обновлён: {path}"
+        self.logger.info(message)
+        return message
+
+    def update_hosts_file(self) -> str:
+        if not is_admin():
+            raise AdminRequiredError("Для обновления hosts нужны права администратора.")
+        message = self.service.update_hosts_file()
+        self.logger.info(message)
+        return message
+
+    def check_for_updates(self) -> str:
+        message = self.service.check_for_updates()
+        self.logger.info(message)
+        return message
+
+    def run_diagnostics(self) -> str:
+        message = self.service.run_diagnostics()
+        self.logger.info("Диагностика Zapret выполнена")
+        return message
 
     def start(self, script: Path | None = None) -> None:
         if not is_admin():
@@ -203,7 +232,7 @@ class ZapretController:
                 error = ""
                 group_results: dict[str, list[HealthCheckResult]] = {"youtube": [], "discord": []}
                 try:
-                    self.service.start_script(script, on_output=self.logger.info)
+                    self.service.start_script(script)
                     if self._sleep_or_cancel(3):
                         canceled = True
                         if progress:
@@ -234,10 +263,11 @@ class ZapretController:
                 row = {
                     "script": script.name,
                     "path": str(script),
-                    "youtube": f"{youtube_ok}/{len(ZAPRET_TEST_TARGETS['youtube'])} ok",
-                    "discord": f"{discord_ok}/{len(ZAPRET_TEST_TARGETS['discord'])} ok",
+                    "youtube": f"{youtube_ok}/{len(ZAPRET_TEST_TARGETS['youtube'])}",
+                    "discord": f"{discord_ok}/{len(ZAPRET_TEST_TARGETS['discord'])}",
                     "detail": detail,
                     "score": score,
+                    "total": len(ZAPRET_TEST_TARGETS["youtube"]) + len(ZAPRET_TEST_TARGETS["discord"]),
                 }
                 results.append(row)
                 if progress:
@@ -276,10 +306,11 @@ class ZapretController:
     def _check_zapret_test_targets(self) -> dict[str, list[HealthCheckResult]]:
         jobs: dict[object, tuple[str, str]] = {}
         results: dict[str, list[HealthCheckResult]] = {"youtube": [], "discord": []}
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        executor = ThreadPoolExecutor(max_workers=4)
+        try:
             for group, urls in ZAPRET_TEST_TARGETS.items():
                 for url in urls:
-                    future = executor.submit(self.healthcheck.http_check, url, 5.0)
+                    future = executor.submit(self.healthcheck.http_check, url, 4.0)
                     jobs[future] = (group, url)
             for future in as_completed(jobs):
                 if self.test_cancel_requested:
@@ -290,6 +321,13 @@ class ZapretController:
                 except Exception as exc:
                     result = HealthCheckResult(url, HealthStatus.FAILED, str(exc))
                 results[group].append(result)
+        finally:
+            if self.test_cancel_requested:
+                for future in jobs:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor.shutdown(wait=True)
         return results
 
     @staticmethod
@@ -298,8 +336,23 @@ class ZapretController:
         for group, checks in results.items():
             for item in checks:
                 if item.status != HealthStatus.OK:
-                    failed.append(f"{group}: {item.detail or item.status.value}")
-        return "; ".join(failed[:6]) or "Все тестовые цели доступны"
+                    failed.append(f"{group}: {ZapretController._simple_detail(item)}")
+        return "; ".join(dict.fromkeys(failed[:6])) or "Все тестовые цели доступны"
+
+    @staticmethod
+    def _simple_detail(item: HealthCheckResult) -> str:
+        text = (item.detail or item.status.value or "").lower()
+        if item.status == HealthStatus.TIMEOUT or "timeout" in text or "таймаут" in text:
+            return "таймаут"
+        if "getaddrinfo" in text or "11001" in text or "name or service" in text:
+            return "DNS не ответил"
+        if "forbidden" in text or " 403" in text:
+            return "доступ запрещён"
+        if "not found" in text or " 404" in text:
+            return "страница не найдена"
+        if item.status == HealthStatus.FAILED:
+            return "нет ответа"
+        return item.detail or item.status.value
 
     def _start_auto(self, scripts: list[Path]) -> None:
         last_error = ""

@@ -11,53 +11,8 @@ from cheburnet.app.models.profile import Profile
 from cheburnet.app.models.server import ServerCheck
 from cheburnet.app.models.vpn_status import VpnStatus
 from cheburnet.app.models.zapret_status import ZapretStatus
-from cheburnet.app.services.free_configs_service import FreeConfigsService
 from cheburnet.app.services.profile_store import ProfileStore
 from cheburnet.app.services.zapret_service import ZapretService
-
-
-def test_add_subscription_source_is_persisted(tmp_path) -> None:
-    settings = SettingsStore(tmp_path / "settings.json")
-    controller = VpnController(
-        AppState(),
-        settings,
-        ProfileStore(tmp_path / "profiles.json"),
-        AppLogger(path=tmp_path / "app.log"),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-    )
-
-    url = "https://example.com/profiles.txt"
-    controller.add_subscription_source(url)
-    controller.add_subscription_source(url)
-
-    assert settings.section("free_configs")["sources"] == [url]
-
-
-def test_import_profile_list_text(tmp_path) -> None:
-    state = AppState()
-    controller = VpnController(
-        state,
-        SettingsStore(tmp_path / "settings.json"),
-        ProfileStore(tmp_path / "profiles.json"),
-        AppLogger(path=tmp_path / "app.log"),
-        object(),
-        object(),
-        FreeConfigsService(),
-        object(),
-        object(),
-    )
-
-    profiles = controller.import_profile_list_text(
-        "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls#One",
-        "local.txt",
-    )
-
-    assert len(profiles) == 1
-    assert state.servers[0].source == "local.txt"
 
 
 class FakeSingBox:
@@ -138,6 +93,40 @@ def test_zapret_service_accepts_user_selected_folder(tmp_path) -> None:
 
     assert selected == root
     assert [script.name for script in service.available_scripts()] == ["general.bat"]
+
+
+def test_zapret_update_extracts_next_to_existing_root(tmp_path, monkeypatch) -> None:
+    old_root = tmp_path / "zapret-discord-youtube-1.9.9b"
+    old_root.mkdir()
+    (old_root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9b"\n', encoding="utf-8")
+    (old_root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+    service = ZapretService(old_root)
+
+    monkeypatch.setattr(
+        service,
+        "latest_release",
+        lambda: {
+            "tag_name": "1.9.9c",
+            "assets": [{"name": "zapret.zip", "browser_download_url": "https://example.com/zapret.zip"}],
+        },
+    )
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.download_file", lambda _url, path, _progress=None: path.write_text("zip", encoding="utf-8"))
+
+    def fake_extract(_archive_path, destination):
+        destination.mkdir(parents=True)
+        root = destination / "zapret-discord-youtube"
+        root.mkdir()
+        (root / "service.bat").write_text('@echo off\nset "LOCAL_VERSION=1.9.9c"\n', encoding="utf-8")
+        (root / "general.bat").write_text("@echo off\n", encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr("cheburnet.app.services.zapret_service.extract_archive", fake_extract)
+
+    new_root = service.download_latest()
+
+    assert new_root == tmp_path / "zapret-discord-youtube-1.9.9c" / "zapret-discord-youtube"
+    assert old_root not in new_root.parents
+    assert service.install_dir() == new_root
 
 
 def test_zapret_hidden_script_replaces_visible_start(tmp_path) -> None:

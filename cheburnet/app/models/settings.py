@@ -7,7 +7,7 @@ from cheburnet.app.constants import DEFAULT_DIRECT_DOMAINS
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "theme": "dark",
+    "theme": "control_deck",
     "accent_color": "#7C5CFF",
     "compact_mode": False,
     "animations": True,
@@ -28,11 +28,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "selected_script": None,
         "install_dir": "",
         "autostart_with_app": False,
-    },
-    "free_configs": {
-        "enabled": True,
-        "auto_update": False,
-        "sources": [],
     },
     "routing": {
         "direct_domains": list(DEFAULT_DIRECT_DOMAINS),

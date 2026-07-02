@@ -8,6 +8,9 @@ SING_BOX_RELEASE_API = f"https://api.github.com/repos/{SING_BOX_REPO}/releases/l
 
 ZAPRET_REPO = "Flowseal/zapret-discord-youtube"
 ZAPRET_RELEASE_API = f"https://api.github.com/repos/{ZAPRET_REPO}/releases/latest"
+ZAPRET_VERSION_URL = f"https://raw.githubusercontent.com/{ZAPRET_REPO}/main/.service/version.txt"
+ZAPRET_IPSET_URL = f"https://raw.githubusercontent.com/{ZAPRET_REPO}/refs/heads/main/.service/ipset-service.txt"
+ZAPRET_HOSTS_URL = f"https://raw.githubusercontent.com/{ZAPRET_REPO}/refs/heads/main/.service/hosts"
 
 YOUTUBE_DISCORD_DOMAINS = [
     "youtube.com",

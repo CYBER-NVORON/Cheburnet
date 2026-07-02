@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from cheburnet.app.app_state import AppState
+from cheburnet.app.constants import APP_VERSION
 from cheburnet.app.controllers.vpn_controller import VpnController
 from cheburnet.app.controllers.zapret_controller import ZapretController
 from cheburnet.app.core.config import SettingsStore
@@ -52,6 +52,9 @@ from cheburnet.app.ui.styles import build_qss
 from cheburnet.app.ui.widgets.sidebar import Sidebar
 
 TaskFunc = Callable[[Callable[[str], None]], Any]
+TRAFFIC_ACTIVE_MS = 1500
+TRAFFIC_IDLE_MS = 10000
+TRAFFIC_MINIMIZED_MS = 15000
 
 
 class TaskWorker(QObject):
@@ -167,7 +170,7 @@ class MainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
-        self.setStyleSheet(build_qss())
+        self.setStyleSheet(build_qss(str(self.settings.get("theme", "control_deck"))))
         self._show_page("dashboard")
 
     def _connect_actions(self) -> None:
@@ -183,8 +186,6 @@ class MainWindow(QMainWindow):
         dashboard.power_clicked.connect(self._toggle_vpn)  # type: ignore[attr-defined]
         dashboard.zapret_clicked.connect(self._toggle_zapret_or_download)  # type: ignore[attr-defined]
         dashboard.import_wireguard_clicked.connect(self._import_wireguard)  # type: ignore[attr-defined]
-        dashboard.update_free_clicked.connect(self._update_free_configs)  # type: ignore[attr-defined]
-        dashboard.add_subscription_clicked.connect(self._add_subscription_dialog)  # type: ignore[attr-defined]
         dashboard.server_selected.connect(self._select_profile)  # type: ignore[attr-defined]
         dashboard.routing_mode_changed.connect(self._save_routing_mode)  # type: ignore[attr-defined]
 
@@ -192,11 +193,8 @@ class MainWindow(QMainWindow):
         vpn.disconnect_clicked.connect(self._disconnect_vpn)  # type: ignore[attr-defined]
         vpn.routing_mode_changed.connect(self._save_routing_mode)  # type: ignore[attr-defined]
         vpn.profile_selected.connect(self._select_profile)  # type: ignore[attr-defined]
-        vpn.update_free_clicked.connect(self._update_free_configs)  # type: ignore[attr-defined]
         vpn.import_wireguard_clicked.connect(self._import_wireguard)  # type: ignore[attr-defined]
-        vpn.import_list_file_clicked.connect(self._import_profile_list_file)  # type: ignore[attr-defined]
         vpn.add_uri_requested.connect(self._add_uri)  # type: ignore[attr-defined]
-        vpn.add_subscription_requested.connect(self._add_subscription)  # type: ignore[attr-defined]
         vpn.delete_clicked.connect(self._delete_profile)  # type: ignore[attr-defined]
         vpn.check_selected_clicked.connect(self._check_profile)  # type: ignore[attr-defined]
         vpn.check_all_clicked.connect(self._check_all_profiles)  # type: ignore[attr-defined]
@@ -205,7 +203,10 @@ class MainWindow(QMainWindow):
         zapret.start_clicked.connect(self._start_zapret)  # type: ignore[attr-defined]
         zapret.stop_clicked.connect(self._stop_zapret)  # type: ignore[attr-defined]
         zapret.choose_folder_clicked.connect(self._choose_zapret_folder)  # type: ignore[attr-defined]
-        zapret.open_folder_clicked.connect(lambda: open_path(self.zapret_service.install_dir()))  # type: ignore[attr-defined]
+        zapret.update_ipset_clicked.connect(self._update_zapret_ipset)  # type: ignore[attr-defined]
+        zapret.update_hosts_clicked.connect(self._update_zapret_hosts)  # type: ignore[attr-defined]
+        zapret.check_updates_clicked.connect(self._check_zapret_updates)  # type: ignore[attr-defined]
+        zapret.diagnostics_clicked.connect(self._run_zapret_diagnostics)  # type: ignore[attr-defined]
         zapret.check_services_clicked.connect(self._check_zapret_services)  # type: ignore[attr-defined]
         zapret.test_all_clicked.connect(self._test_zapret_scripts)  # type: ignore[attr-defined]
         zapret.stop_test_clicked.connect(self._stop_zapret_test)  # type: ignore[attr-defined]
@@ -224,25 +225,23 @@ class MainWindow(QMainWindow):
         updates.update_zapret_clicked.connect(self._download_zapret)  # type: ignore[attr-defined]
 
         self.state.traffic_changed.connect(lambda data: self.sidebar.set_traffic(float(data.get("download_mbps", 0)), float(data.get("upload_mbps", 0))))
+        self.state.vpn_status_changed.connect(lambda _status: self._update_traffic_timer())
 
     def _bootstrap(self) -> None:
         self.sidebar.set_admin(self.state.is_admin)
         self.logger.info("Приложение запущено")
         self.logger.info(f"Проверка прав администратора: {'OK' if self.state.is_admin else 'нет прав'}")
         self.vpn_controller.load_profiles()
-        self.zapret_controller.refresh_status()
-        self._refresh_scripts()
+        self._refresh_scripts(check_process=False)
         self._refresh_settings_pages()
         self.traffic_timer = QTimer(self)
         self.traffic_timer.timeout.connect(self._sample_traffic)
-        self.traffic_timer.start(1000)
+        self.traffic_timer.start(self._traffic_interval())
         self._sample_traffic()
         if not self.state.is_admin:
             QTimer.singleShot(250, self._show_admin_dialog)
         else:
             QTimer.singleShot(700, self._autostart_services)
-        if self.settings.section("free_configs").get("auto_update"):
-            QTimer.singleShot(1200, self._update_free_configs)
 
     def _show_page(self, key: str) -> None:
         page = self.pages.get(key)
@@ -250,10 +249,12 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentWidget(page)
         self.sidebar.set_active(key)
+        if key == "zapret":
+            self._refresh_scripts(check_process=True)
 
     def _show_admin_dialog(self) -> None:
         dialog = AdminDialog(self)
-        dialog.setStyleSheet(build_qss())
+        dialog.setStyleSheet(build_qss(str(self.settings.get("theme", "control_deck"))))
         dialog.relaunch_requested.connect(self._relaunch_admin)
         dialog.exec()
 
@@ -311,7 +312,6 @@ class MainWindow(QMainWindow):
                 self.logger.warning("Zapret test row parse failed")
                 return
             self.pages["zapret"].append_test_result(row)  # type: ignore[attr-defined]
-            self.logger.info(f"Zapret тест: {row.get('script', '')} score {row.get('score', 0)}")
             return
         self.logger.info(message)
 
@@ -359,14 +359,14 @@ class MainWindow(QMainWindow):
         zapret_auto = bool(self.settings.section("zapret").get("autostart_with_app", False))
         if zapret_auto and self.state.zapret_status != ZapretStatus.RUNNING:
             if not self.zapret_service.is_installed():
-                self.logger.warning("Автозапуск Zapret пропущен: Zapret не установлен")
+                self.logger.warning("Запуск Zapret вместе с CheburNet пропущен: Zapret не установлен")
                 self._autostart_vpn(vpn_auto)
                 return
-            self.logger.info("Автозапуск Zapret")
+            self.logger.info("Запуск Zapret вместе с CheburNet")
             self._run_task(
                 lambda _progress: self.zapret_controller.start(),
                 done=lambda _result: self._autostart_vpn(vpn_auto),
-                failed=lambda message: (self.logger.error(f"Автозапуск Zapret: {message}"), self._autostart_vpn(vpn_auto)),
+                failed=lambda message: (self.logger.error(f"Запуск Zapret вместе с CheburNet: {message}"), self._autostart_vpn(vpn_auto)),
             )
             return
         self._autostart_vpn(vpn_auto)
@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
             self._start_zapret()
 
     def _download_zapret(self) -> None:
-        self._run_task(lambda progress: self.zapret_controller.download_or_update(progress), done=lambda _root: self._refresh_scripts())
+        self._run_task(lambda progress: self.zapret_controller.download_or_update(progress), done=lambda _root: (self._refresh_scripts(), self._refresh_settings_pages()))
 
     def _choose_zapret_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Папка Flowseal zapret-discord-youtube")
@@ -403,6 +403,26 @@ class MainWindow(QMainWindow):
             self._refresh_settings_pages()
         except Exception as exc:
             self._show_error(str(exc))
+
+    def _show_zapret_info(self, message: object) -> None:
+        QMessageBox.information(self, "Zapret", str(message))
+
+    def _update_zapret_ipset(self) -> None:
+        self._run_task(
+            lambda _progress: self.zapret_controller.update_ipset_list(),
+            done=lambda message: (self._show_zapret_info(message), self.pages["zapret"].set_options(self.zapret_controller.options())),  # type: ignore[attr-defined]
+        )
+
+    def _update_zapret_hosts(self) -> None:
+        if not self._require_admin():
+            return
+        self._run_task(lambda _progress: self.zapret_controller.update_hosts_file(), done=self._show_zapret_info)
+
+    def _check_zapret_updates(self) -> None:
+        self._run_task(lambda _progress: self.zapret_controller.check_for_updates(), done=self._show_zapret_info)
+
+    def _run_zapret_diagnostics(self) -> None:
+        self._run_task(lambda _progress: self.zapret_controller.run_diagnostics(), done=self._show_zapret_info)
 
     def _start_zapret(self) -> None:
         if not self._require_admin():
@@ -439,35 +459,11 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error(str(exc))
 
-    def _import_profile_list_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Список профилей", "", "Text files (*.txt);;All files (*)")
-        if not path:
-            return
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-            self.vpn_controller.import_profile_list_text(text, Path(path).name)
-        except Exception as exc:
-            self._show_error(str(exc))
-
     def _add_uri(self, uri: str) -> None:
         try:
             self.vpn_controller.add_uri(uri)
         except Exception as exc:
             self._show_error(str(exc))
-
-    def _add_subscription_dialog(self) -> None:
-        self.pages["vpn"]._ask_subscription()  # type: ignore[attr-defined]
-
-    def _add_subscription(self, url: str) -> None:
-        try:
-            self.vpn_controller.add_subscription_source(url)
-            self._refresh_settings_pages()
-            QMessageBox.information(self, "Список профилей", "URL добавлен. Нажмите «Обновить списки», чтобы загрузить профили.")
-        except Exception as exc:
-            self._show_error(str(exc))
-
-    def _update_free_configs(self) -> None:
-        self._run_task(lambda progress: self.vpn_controller.update_free_configs(progress))
 
     def _select_profile(self, profile_id: str) -> None:
         self.vpn_controller.select_profile(profile_id)
@@ -478,11 +474,11 @@ class MainWindow(QMainWindow):
     def _check_profile(self, profile_id: str) -> None:
         profile = self.profiles.get(profile_id)
         if profile:
-            self._run_task(lambda _progress: self.vpn_controller.check_profile(profile))
+            self._run_task(lambda _progress: self.vpn_controller.check_profile(profile, force=True))
 
     def _check_all_profiles(self) -> None:
         profiles = self.profiles.all()
-        self._run_task(lambda _progress: [self.vpn_controller.check_profile(profile) for profile in profiles])
+        self._run_task(lambda progress: self.vpn_controller.check_profiles(profiles, progress=progress))
 
     def _save_rules(self, domains: list[str]) -> None:
         self.settings.update({"routing": {"direct_domains": domains}})
@@ -493,6 +489,7 @@ class MainWindow(QMainWindow):
         previous_mode = str(self.settings.get("routing_mode", "full_vpn"))
         self.settings.update(values)
         self.logger.info("Настройки сохранены")
+        self.setStyleSheet(build_qss(str(self.settings.get("theme", "control_deck"))))
         self._refresh_settings_pages()
         current_mode = str(self.settings.get("routing_mode", "full_vpn"))
         if current_mode == "zapret_only" and self.state.vpn_status in {VpnStatus.CONNECTED, VpnStatus.CONNECTING}:
@@ -540,37 +537,63 @@ class MainWindow(QMainWindow):
 
     def _check_updates(self) -> None:
         updates = self.pages["updates"]
+        updates.set_checking()  # type: ignore[attr-defined]
 
-        def work(_progress: Callable[[str], None]) -> str:
-            lines: list[str] = []
+        def work(_progress: Callable[[str], None]) -> dict[str, dict[str, str]]:
+            def short_error(exc: Exception) -> str:
+                text = str(exc)
+                if "10054" in text:
+                    return "Соединение сброшено"
+                if "timed out" in text.lower() or "timeout" in text.lower():
+                    return "Таймаут"
+                if "urlopen error" in text:
+                    return "Сеть недоступна"
+                return text[:80]
+
+            data: dict[str, dict[str, str]] = {
+                "app": {"status": "ok", "version": APP_VERSION, "note": "Текущая сборка"},
+                "singbox": {"status": "neutral", "version": "—", "note": "Не проверялось"},
+                "zapret": {"status": "neutral", "version": "—", "note": "Не проверялось"},
+            }
             current_singbox = self.singbox.version() or "не установлен"
             try:
                 latest = self.singbox.latest_release()
                 latest_singbox = str(latest.get("tag_name") or latest.get("name") or "latest")
+                status = "ok" if latest_singbox in current_singbox else "warn"
+                data["singbox"] = {
+                    "status": status,
+                    "version": current_singbox,
+                    "note": "Актуально" if status == "ok" else f"Доступно {latest_singbox}",
+                }
             except Exception as exc:
-                latest_singbox = f"не удалось проверить ({exc})"
-            lines.append(f"CheburNet: {self.windowTitle()}")
-            lines.append(f"sing-box: локально {current_singbox}; latest {latest_singbox}")
+                data["singbox"] = {"status": "error", "version": current_singbox, "note": short_error(exc)}
+
+            local_zapret = self.zapret_service.local_version() or ("установлен" if self.zapret_service.is_installed() else "не установлен")
             try:
                 latest_z = self.zapret_service.latest_release()
                 latest_zapret = str(latest_z.get("tag_name") or latest_z.get("name") or "latest")
+                status = "ok" if latest_zapret == local_zapret else "warn"
+                if local_zapret == "не установлен":
+                    status = "warn"
+                data["zapret"] = {
+                    "status": status,
+                    "version": local_zapret,
+                    "note": "Актуально" if status == "ok" else f"Доступно {latest_zapret}",
+                }
             except Exception as exc:
-                latest_zapret = f"не удалось проверить ({exc})"
-            state = "установлен" if self.zapret_service.is_installed() else "не установлен"
-            lines.append(f"zapret: {state}; latest {latest_zapret}")
-            lines.append("Сборка: PyInstaller onedir рекомендуется для первого стабильного релиза.")
-            return "\n".join(lines)
+                data["zapret"] = {"status": "error", "version": local_zapret, "note": short_error(exc)}
+            return data
 
-        self._run_task(work, done=lambda text: updates.set_summary(str(text)))  # type: ignore[attr-defined]
+        self._run_task(work, done=lambda data: updates.set_versions(dict(data)))  # type: ignore[attr-defined]
 
     def _update_singbox(self) -> None:
         self._run_task(lambda progress: self.singbox.download_latest(progress), done=lambda path: self.logger.info(f"sing-box обновлен: {path}"))
 
-    def _refresh_scripts(self) -> None:
+    def _refresh_scripts(self, check_process: bool = False) -> None:
         scripts = self.zapret_controller.scripts()
         selected = str(self.settings.section("zapret").get("selected_script") or "")
         self.pages["zapret"].set_scripts(scripts, selected)  # type: ignore[attr-defined]
-        self.zapret_controller.refresh_status()
+        self.zapret_controller.refresh_status(check_process=check_process)
         self.pages["zapret"].set_mode(str(self.settings.section("zapret").get("mode", "auto")))  # type: ignore[attr-defined]
         self.pages["zapret"].set_options(self.zapret_controller.options())  # type: ignore[attr-defined]
 
@@ -579,9 +602,11 @@ class MainWindow(QMainWindow):
 
     def _test_zapret_scripts(self) -> None:
         self.pages["zapret"].set_test_results([])  # type: ignore[attr-defined]
+        self.pages["zapret"].set_test_running(True)  # type: ignore[attr-defined]
         self._run_task(
             lambda progress: self.zapret_controller.test_all_scripts(progress),
-            done=lambda rows: (self.pages["zapret"].set_test_results(list(rows)), self._refresh_scripts()),  # type: ignore[attr-defined]
+            done=lambda rows: (self.pages["zapret"].set_test_results(list(rows)), self.pages["zapret"].set_test_running(False), self._refresh_scripts()),  # type: ignore[attr-defined]
+            failed=lambda message: (self.pages["zapret"].set_test_running(False), self._show_error(message)),  # type: ignore[attr-defined]
         )
 
     def _stop_zapret_test(self) -> None:
@@ -598,6 +623,21 @@ class MainWindow(QMainWindow):
     def _sample_traffic(self) -> None:
         traffic = self.traffic_monitor.sample(self.state.vpn_status == VpnStatus.CONNECTED)
         self.state.set_traffic(traffic)
+        self._update_traffic_timer()
+
+    def _traffic_interval(self) -> int:
+        if self.isMinimized():
+            return TRAFFIC_MINIMIZED_MS
+        if self.state.vpn_status == VpnStatus.CONNECTED:
+            return TRAFFIC_ACTIVE_MS
+        return TRAFFIC_IDLE_MS
+
+    def _update_traffic_timer(self) -> None:
+        if not hasattr(self, "traffic_timer"):
+            return
+        interval = self._traffic_interval()
+        if self.traffic_timer.interval() != interval:
+            self.traffic_timer.setInterval(interval)
 
     def _init_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -626,7 +666,13 @@ class MainWindow(QMainWindow):
             self.zapret_service.stop()
         except Exception as exc:
             self.logger.error(f"Ошибка остановки Zapret: {exc}")
+        self.logger.flush()
         event.accept()
+
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._update_traffic_timer()
+        super().changeEvent(event)
 
 
 def run_app() -> int:

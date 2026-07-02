@@ -38,18 +38,20 @@ class ProfileStore:
             return None
         return next((profile for profile in self.profiles if profile.id == profile_id), None)
 
-    def upsert(self, profile: Profile) -> Profile:
+    def upsert(self, profile: Profile, save: bool = True) -> Profile:
         self.profiles = [item for item in self.profiles if item.id != profile.id]
         self.profiles.append(profile)
-        self.save()
+        if save:
+            self.save()
         return profile
 
-    def upsert_many(self, profiles: list[Profile]) -> None:
+    def upsert_many(self, profiles: list[Profile], save: bool = True) -> None:
         existing = {profile.id: profile for profile in self.profiles}
         for profile in profiles:
             existing[profile.id] = profile
         self.profiles = list(existing.values())
-        self.save()
+        if save:
+            self.save()
 
     def delete(self, profile_id: str) -> bool:
         before = len(self.profiles)

@@ -61,10 +61,10 @@ class PowerButton(QWidget):
         painter.drawEllipse(center, 77 + pulse * 4, 77 + pulse * 4)
 
         painter.setPen(QPen(QColor(COLORS["border"]), 1))
-        painter.setBrush(QColor("#0F1734"))
+        painter.setBrush(QColor(COLORS["input"]))
         painter.drawEllipse(center, 68, 68)
 
-        painter.setPen(QPen(QColor("#FFFFFF"), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(QColor(COLORS["text"]), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         arc = QRectF(center.x() - 34, center.y() - 34, 68, 68)
         painter.drawArc(arc, 125 * 16, 290 * 16)
         painter.drawLine(QPointF(center.x(), center.y() - 42), QPointF(center.x(), center.y() - 9))
