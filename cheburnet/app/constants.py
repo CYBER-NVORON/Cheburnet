@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "CheburNet"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 CHEBURNET_REPO = "CYBER-NVORON/Cheburnet"
 CHEBURNET_RELEASE_API = f"https://api.github.com/repos/{CHEBURNET_REPO}/releases/latest"
