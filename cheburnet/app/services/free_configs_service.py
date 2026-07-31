@@ -158,15 +158,24 @@ class FreeConfigsService:
             "server_name": query.get("sni") or query.get("peer") or query.get("host") or server,
             "insecure": str(query.get("allowInsecure") or query.get("insecure") or "").lower() in {"1", "true", "yes"},
         }
-        fingerprint = query.get("fp") or query.get("fingerprint")
+        if "fp" in query:
+            fingerprint = query["fp"]
+        elif "fingerprint" in query:
+            fingerprint = query["fingerprint"]
+        else:
+            fingerprint = "chrome"
+
         if fingerprint:
             tls["utls"] = {"enabled": True, "fingerprint": fingerprint}
+
         if security == "reality":
             reality: dict[str, object] = {"enabled": True}
             if query.get("pbk"):
                 reality["public_key"] = query["pbk"]
             if query.get("sid"):
                 reality["short_id"] = query["sid"]
+            if "spx" in query:
+                reality["spider_x"] = query["spx"]
             tls["reality"] = reality
         outbound["tls"] = tls
 
