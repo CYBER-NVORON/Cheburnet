@@ -36,7 +36,7 @@ class FakeBuilder:
     def __init__(self, tmp_path) -> None:
         self.tmp_path = tmp_path
 
-    def build(self, profile, settings, mode, version):
+    def build_config(self, profile, settings, output_path=None):
         if profile.id == "bad":
             raise RuntimeError("broken profile")
         config = self.tmp_path / f"{profile.id}.json"

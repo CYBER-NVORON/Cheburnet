@@ -15,7 +15,7 @@ def test_parse_vless_uri() -> None:
     assert profile.protocol == "vless"
     assert profile.host == "example.com"
     assert profile.port == 443
-    assert profile.outbound["transport"]["type"] == "ws"
+    assert profile.outbound["network"] == "ws"
 
 
 def test_parse_vmess_uri() -> None:
@@ -34,7 +34,7 @@ def test_parse_vmess_uri() -> None:
     profile = service.parse_link(f"vmess://{encoded}")
 
     assert profile is not None
-    assert profile.name == "VMess Test"
+    assert profile.name == "VMESS vmess.example:443"
     assert profile.protocol == "vmess"
-    assert profile.outbound["tls"]["enabled"] is True
+    assert profile.outbound["tls"] is True
 
