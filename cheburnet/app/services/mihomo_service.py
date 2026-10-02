@@ -72,10 +72,10 @@ class MihomoService:
         if extract_dir.exists():
             shutil.rmtree(extract_dir)
         extract_archive(archive_path, extract_dir)
-        exe_name = "mihomo.exe" if IS_WINDOWS else "mihomo"
-        unpacked = next(extract_dir.rglob(exe_name), None)
+        exe_name = "*.exe" if IS_WINDOWS else "mihomo*"
+        unpacked = next((p for p in extract_dir.rglob(exe_name) if p.is_file()), None)
         if not unpacked:
-            raise ToolInstallError(f"В архиве mihomo не найден {exe_name}.")
+            raise ToolInstallError(f"Executable not found in Mihomo archive.")
         target = self.default_binary_path()
         shutil.copy2(unpacked, target)
         if not IS_WINDOWS:
