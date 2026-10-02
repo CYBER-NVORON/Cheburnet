@@ -219,7 +219,7 @@ class VpnController:
             endpoint = self.healthcheck.tcp_check(profile)
             if endpoint.status != "online":
                 raise CheburNetError(f"Endpoint недоступен: {endpoint.detail}")
-        config_path = self.builder.build(profile, self.settings.data, mode, version)
+        config_path = self.builder.build_config(profile, self.settings.data)
         self.logger.info("mihomo config.json сгенерирован")
         check = self.mihomo.check_config(binary, config_path)
         if not check.ok:

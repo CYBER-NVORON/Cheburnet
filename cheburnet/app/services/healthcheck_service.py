@@ -100,10 +100,10 @@ class HealthcheckService:
 
         try:
             if profile.protocol == "wireguard":
-                config_path = builder.build(profile, settings, RoutingMode.FULL_VPN, version, generated_dir() / f"check-{profile.id}.json")
+                config_path = builder.build_config(profile, settings, generated_dir() / f"check-{profile.id}.yaml")
             else:
                 port = self._free_port()
-                config_path = builder.build_probe_config(profile, port, generated_dir() / f"check-{profile.id}.json")
+                config_path = builder.build_probe_config(profile, port, generated_dir() / f"check-{profile.id}.yaml")
         except Exception as exc:
             profile.status = "syntax_error"
             profile.meta["last_check_detail"] = str(exc)
