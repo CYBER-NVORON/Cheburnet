@@ -128,7 +128,7 @@ class MainWindow(QMainWindow):
         self.mihomo = MihomoService()
         self.zapret_service = ZapretService(self.settings.section("zapret").get("install_dir") or None)
         self.wireguard = WireGuardImporter()
-        self.builder = MihomoConfigBuilder(self.wireguard)
+        self.builder = MihomoConfigBuilder()
         self.vpn_controller = VpnController(
             self.state,
             self.settings,

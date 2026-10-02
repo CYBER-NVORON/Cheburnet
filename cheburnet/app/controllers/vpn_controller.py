@@ -16,8 +16,8 @@ from cheburnet.app.models.zapret_status import ZapretStatus
 from cheburnet.app.services.free_configs_service import FreeConfigsService
 from cheburnet.app.services.healthcheck_service import HealthcheckService
 from cheburnet.app.services.profile_store import ProfileStore
-from cheburnet.app.services.singbox_config_builder import SingBoxConfigBuilder
-from cheburnet.app.services.singbox_service import SingBoxService
+from cheburnet.app.services.mihomo_config_builder import MihomoConfigBuilder
+from cheburnet.app.services.mihomo_service import MihomoService
 from cheburnet.app.services.wireguard_importer import WireGuardImporter
 
 Progress = Callable[[str], None]
@@ -32,8 +32,8 @@ class VpnController:
         settings: SettingsStore,
         profiles: ProfileStore,
         logger: AppLogger,
-        singbox: SingBoxService,
-        builder: SingBoxConfigBuilder,
+        mihomo: MihomoService,
+        builder: MihomoConfigBuilder,
         free_configs: FreeConfigsService,
         wireguard: WireGuardImporter,
         healthcheck: HealthcheckService,
@@ -42,7 +42,7 @@ class VpnController:
         self.settings = settings
         self.profiles = profiles
         self.logger = logger
-        self.singbox = singbox
+        self.mihomo = mihomo
         self.builder = builder
         self.free_configs = free_configs
         self.wireguard = wireguard
@@ -94,10 +94,10 @@ class VpnController:
         if not force and self._has_recent_check(profile):
             return profile
         if binary is None:
-            binary = self.singbox.ensure_installed(progress=progress)
+            binary = self.mihomo.ensure_installed(progress=progress)
         if version is None:
-            version = self.singbox.version(binary)
-        profile = self.healthcheck.check_profile_with_singbox(profile, binary, self.builder, self.settings.data, version, progress)
+            version = self.mihomo.version(binary)
+        profile = self.healthcheck.check_profile_with_mihomo(profile, binary, self.builder, self.settings.data, version, progress)
         profile.meta["last_checked_at"] = time.time()
         self.profiles.upsert(profile, save=False)
         self._sort_profiles()
@@ -118,8 +118,8 @@ class VpnController:
         if not pending:
             return profiles
 
-        binary = self.singbox.ensure_installed(progress=progress)
-        version = self.singbox.version(binary)
+        binary = self.mihomo.ensure_installed(progress=progress)
+        version = self.mihomo.version(binary)
         checked: list[Profile] = []
         worker_count = max(1, min(max_workers, len(pending)))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -145,7 +145,7 @@ class VpnController:
         return checked
 
     def _check_profile_probe(self, profile: Profile, binary: Path, version: str) -> Profile:
-        checked = self.healthcheck.check_profile_with_singbox(profile, binary, self.builder, self.settings.data, version, None)
+        checked = self.healthcheck.check_profile_with_mihomo(profile, binary, self.builder, self.settings.data, version, None)
         checked.meta["last_checked_at"] = time.time()
         return checked
 
@@ -173,10 +173,10 @@ class VpnController:
         self.state.set_vpn_status(VpnStatus.CONNECTING)
         self.logger.info("Подключаю VPN")
         try:
-            binary = self.singbox.ensure_installed(progress=progress)
-            version = self.singbox.version(binary)
+            binary = self.mihomo.ensure_installed(progress=progress)
+            version = self.mihomo.version(binary)
             if progress:
-                progress(f"sing-box: {version or binary}")
+                progress(f"mihomo: {version or binary}")
             auto_failover = bool(self.settings.section("vpn").get("auto_failover", False))
             candidates = self._connection_candidates(profile) if auto_failover else [profile]
             last_error = ""
@@ -189,7 +189,7 @@ class VpnController:
                 except Exception as exc:
                     last_error = str(exc)
                     try:
-                        self.singbox.stop()
+                        self.mihomo.stop()
                     except Exception:
                         pass
                     candidate.status = "failed"
@@ -204,7 +204,7 @@ class VpnController:
         except Exception as exc:
             if self.cancel_requested:
                 try:
-                    self.singbox.stop()
+                    self.mihomo.stop()
                 except Exception:
                     pass
                 self.state.set_vpn_status(VpnStatus.DISCONNECTED)
@@ -220,24 +220,24 @@ class VpnController:
             if endpoint.status != "online":
                 raise CheburNetError(f"Endpoint недоступен: {endpoint.detail}")
         config_path = self.builder.build(profile, self.settings.data, mode, version)
-        self.logger.info("sing-box config.json сгенерирован")
-        check = self.singbox.check_config(binary, config_path)
+        self.logger.info("mihomo config.json сгенерирован")
+        check = self.mihomo.check_config(binary, config_path)
         if not check.ok:
-            raise CheburNetError(check.text or "sing-box check завершился с ошибкой.")
-        self.logger.info("sing-box check: OK")
+            raise CheburNetError(check.text or "mihomo check завершился с ошибкой.")
+        self.logger.info("mihomo check: OK")
         if self.cancel_requested:
             self.state.set_vpn_status(VpnStatus.DISCONNECTED)
             self.logger.info("Запуск VPN отменен")
             return
-        self.singbox.start(binary, config_path, on_output=self.logger.info)
+        self.mihomo.start(binary, config_path, on_output=self.logger.info)
         ready = self.healthcheck.check_vpn_ready(profile)
         if self.cancel_requested:
-            self.singbox.stop()
+            self.mihomo.stop()
             self.state.set_vpn_status(VpnStatus.DISCONNECTED)
             self.logger.info("Запуск VPN отменен")
             return
         if ready.status != "online":
-            self.singbox.stop()
+            self.mihomo.stop()
             raise CheburNetError(f"VPN health-check не прошёл: {ready.detail}")
         profile.status = "online"
         profile.latency_ms = ready.latency_ms
@@ -247,7 +247,7 @@ class VpnController:
         self._sort_profiles()
         self._update_routes(mode)
         if self.cancel_requested:
-            self.singbox.stop()
+            self.mihomo.stop()
             self.state.set_vpn_status(VpnStatus.DISCONNECTED)
             self.logger.info("Запуск VPN отменен")
             return
@@ -272,7 +272,7 @@ class VpnController:
     def disconnect(self) -> None:
         self.cancel_requested = True
         self.state.set_vpn_status(VpnStatus.DISCONNECTING)
-        self.singbox.stop()
+        self.mihomo.stop()
         self.state.set_vpn_status(VpnStatus.DISCONNECTED)
         if self.state.zapret_status == ZapretStatus.RUNNING:
             self.state.set_routes({"youtube": "direct + Zapret", "discord": "direct + Zapret", "other": "direct"})

@@ -6,7 +6,24 @@ from typing import Any
 
 from cheburnet.app.errors import ProfileImportError
 from cheburnet.app.models.profile import Profile
-from cheburnet.app.models.wireguard import WireGuardConfig, WireGuardPeer
+from dataclasses import dataclass
+
+@dataclass
+class WireGuardPeer:
+    address: str
+    port: int
+    public_key: str
+    allowed_ips: list[str]
+    pre_shared_key: str = ""
+    persistent_keepalive_interval: int | None = None
+
+@dataclass
+class WireGuardConfig:
+    private_key: str
+    address: list[str]
+    dns: list[str]
+    mtu: int
+    peers: list[WireGuardPeer]
 
 class WireGuardImporter:
     def import_file(self, config_path: Path) -> Profile:
@@ -35,7 +52,7 @@ class WireGuardImporter:
     def parse(self, path: str | Path) -> WireGuardConfig:
         config_path = Path(path)
         if not config_path.exists():
-            raise ProfileImportError(f"WireGuard .conf не найден: {config_path}")
+            raise ProfileImportError(f"WireGuard .conf file not found: {config_path}")
         return self.parse_text(config_path.read_text(encoding="utf-8", errors="replace"))
 
     def parse_text(self, text: str) -> WireGuardConfig:
@@ -58,12 +75,12 @@ class WireGuardImporter:
         interface = next((data for name, data in sections if name == "interface"), None)
         peers_raw = [data for name, data in sections if name == "peer"]
         if not interface or not peers_raw:
-            raise ProfileImportError("WireGuard файл сломан.")
+            raise ProfileImportError("WireGuard file is broken.")
 
         private_key = interface.get("privatekey", "")
         address = self._split_csv(interface.get("address", ""))
         if not private_key or not address:
-            raise ProfileImportError("В [Interface] отсутствуют ключи.")
+            raise ProfileImportError("Missing keys in [Interface].")
 
         peers = []
         for peer in peers_raw:
@@ -71,7 +88,7 @@ class WireGuardImporter:
             endpoint = peer.get("endpoint", "")
             allowed_ips = self._split_csv(peer.get("allowedips", ""))
             if not public_key or not endpoint or not allowed_ips:
-                raise ProfileImportError("В [Peer] отсутствуют ключи.")
+                raise ProfileImportError("Missing keys in [Peer].")
             host, port = self._parse_endpoint(endpoint)
             keepalive = None
             if peer.get("persistentkeepalive"):

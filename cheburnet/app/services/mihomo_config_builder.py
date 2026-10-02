@@ -10,7 +10,6 @@ from cheburnet.app.constants import YOUTUBE_DISCORD_DOMAINS
 from cheburnet.app.core.paths import generated_dir
 from cheburnet.app.errors import ConfigBuildError
 from cheburnet.app.models.profile import Profile
-from cheburnet.app.models.settings import RoutingMode
 from cheburnet.app.services.wireguard_importer import WireGuardImporter
 
 
@@ -19,7 +18,7 @@ class MihomoConfigBuilder:
         self.wireguard_importer = WireGuardImporter()
 
     def build_config(self, profile: Profile, settings: dict[str, Any], output_path: str | Path | None = None) -> Path:
-        mode = RoutingMode(settings.get("routing", {}).get("mode", RoutingMode.SMART_SPLIT.value))
+        mode = settings.get("routing_mode", "smart_split")
         
         proxy = None
         if profile.protocol == "wireguard":
@@ -28,7 +27,7 @@ class MihomoConfigBuilder:
             proxy["name"] = "proxy"
         else:
             if not profile.outbound:
-                raise ConfigBuildError("В профиле нет настроек прокси.")
+                raise ConfigBuildError("Profile proxy configuration is missing.")
             proxy = copy.deepcopy(profile.outbound)
             proxy["name"] = "proxy"
 
@@ -77,13 +76,12 @@ class MihomoConfigBuilder:
 
         output = Path(output_path) if output_path else generated_dir() / "config.yaml"
         output.parent.mkdir(parents=True, exist_ok=True)
-        # We can just dump as JSON, mihomo parses JSON perfectly!
         output.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         return output
 
     def build_probe_config(self, profile: Profile, listen_port: int, output_path: str | Path) -> Path:
         if not profile.outbound:
-            raise ConfigBuildError("Нет настроек.")
+            raise ConfigBuildError("Profile proxy configuration is missing.")
         proxy = copy.deepcopy(profile.outbound)
         proxy["name"] = "proxy"
         config = {
@@ -107,16 +105,16 @@ class MihomoConfigBuilder:
                 return config
         if profile.config_path:
             return self.wireguard_importer.parse(profile.config_path)
-        raise ConfigBuildError("WireGuard профиль сломан.")
+        raise ConfigBuildError("WireGuard profile is broken.")
 
     @staticmethod
-    def _direct_domains(settings: dict[str, Any], mode: RoutingMode) -> list[str]:
+    def _direct_domains(settings: dict[str, Any], mode: str) -> list[str]:
         routing = settings.get("routing", {}) if isinstance(settings.get("routing"), dict) else {}
         vpn = settings.get("vpn", {}) if isinstance(settings.get("vpn"), dict) else {}
-        if vpn.get("kill_switch") or mode == RoutingMode.FULL_VPN:
+        if vpn.get("kill_switch") or mode == "full_vpn":
             return []
         domains = list(routing.get("direct_domains", []))
-        if mode == RoutingMode.SMART_SPLIT:
+        if mode == "smart_split":
             domains.extend(YOUTUBE_DISCORD_DOMAINS)
         return domains
 
@@ -129,8 +127,8 @@ class MihomoConfigBuilder:
             if not text or text.startswith("#"): continue
             text = text.removeprefix("*.").strip()
             if "/" in text or "\\" in text: continue
-            if text == "рф": text = "xn--p1ai"
-            if text.startswith(".рф"): text = ".xn--p1ai"
+            if text == "СЂС„": text = "xn--p1ai"
+            if text.startswith(".СЂС„"): text = ".xn--p1ai"
             if text.startswith(".") or text in {"ru", "xn--p1ai", "su"}:
                 value = text if text.startswith(".") else f".{text}"
                 if value not in suffix: suffix.append(value)
