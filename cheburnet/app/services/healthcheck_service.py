@@ -14,7 +14,7 @@ from cheburnet.app.core.process import CREATE_NO_WINDOW, IS_WINDOWS, _hidden_sta
 from cheburnet.app.models.health import HealthCheckResult, HealthStatus
 from cheburnet.app.models.profile import Profile, RoutingMode
 from cheburnet.app.models.server import ServerCheck
-from cheburnet.app.services.singbox_config_builder import SingBoxConfigBuilder
+from cheburnet.app.services.mihomo_config_builder import MihomoConfigBuilder
 
 
 class HealthcheckService:
@@ -81,11 +81,11 @@ class HealthcheckService:
                 time.sleep(delay)
         return ServerCheck(profile.id, last.status.value, last.latency_ms, last.detail)
 
-    def check_profile_with_singbox(
+    def check_profile_with_mihomo(
         self,
         profile: Profile,
-        singbox_binary: Path,
-        builder: SingBoxConfigBuilder,
+        mihomo_binary: Path,
+        builder: MihomoConfigBuilder,
         settings: dict,
         version: str,
         progress: Callable[[str], None] | None = None,
@@ -109,25 +109,25 @@ class HealthcheckService:
             profile.meta["last_check_detail"] = str(exc)
             return profile
 
-        check = run_command([str(singbox_binary), "check", "-c", str(config_path)], timeout=20)
+        check = run_command([str(mihomo_binary), "check", "-c", str(config_path)], timeout=20)
         if not check.ok:
             profile.status = "syntax_error"
-            profile.meta["last_check_detail"] = check.text or "sing-box check failed"
+            profile.meta["last_check_detail"] = check.text or "mihomo check failed"
             return profile
 
         if profile.protocol == "wireguard":
             profile.status = "online"
-            profile.meta["last_check_detail"] = "sing-box check OK; активный WireGuard probe пропущен"
+            profile.meta["last_check_detail"] = "mihomo check OK; активный WireGuard probe пропущен"
             return profile
 
-        active = self._short_proxy_probe(singbox_binary, config_path, profile.id, progress)
+        active = self._short_proxy_probe(mihomo_binary, config_path, profile.id, progress)
         profile.status = active[0]
         profile.meta["last_check_detail"] = active[1]
         return profile
 
     def _short_proxy_probe(
         self,
-        singbox_binary: Path,
+        mihomo_binary: Path,
         config_path: Path,
         profile_id: str,
         progress: Callable[[str], None] | None,
@@ -135,7 +135,7 @@ class HealthcheckService:
         port = self._extract_probe_port(config_path)
         flags = CREATE_NO_WINDOW if IS_WINDOWS else 0
         process = subprocess.Popen(
-            [str(singbox_binary), "run", "-c", str(config_path)],
+            [str(mihomo_binary), "run", "-c", str(config_path)],
             cwd=str(config_path.parent),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -150,10 +150,10 @@ class HealthcheckService:
             time.sleep(1.5)
             if process.poll() is not None:
                 output = process.stdout.read() if process.stdout else ""
-                return "failed", output.strip() or "sing-box завершился сразу"
+                return "failed", output.strip() or "mihomo завершился сразу"
             curl = shutil.which("curl.exe" if IS_WINDOWS else "curl")
             if not curl:
-                return "online", "sing-box check OK; curl не найден, активный HTTP probe пропущен"
+                return "online", "mihomo check OK; curl не найден, активный HTTP probe пропущен"
             result = run_command(
                 [
                     curl,

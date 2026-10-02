@@ -6,8 +6,8 @@ APP_VERSION = "1.0.2"
 CHEBURNET_REPO = "CYBER-NVORON/Cheburnet"
 CHEBURNET_RELEASE_API = f"https://api.github.com/repos/{CHEBURNET_REPO}/releases/latest"
 
-SING_BOX_REPO = "SagerNet/sing-box"
-SING_BOX_RELEASE_API = f"https://api.github.com/repos/{SING_BOX_REPO}/releases/latest"
+MIHOMO_REPO = "MetaCubeX/mihomo"
+MIHOMO_RELEASE_API = f"https://api.github.com/repos/{MIHOMO_REPO}/releases/latest"
 
 ZAPRET_REPO = "Flowseal/zapret-discord-youtube"
 ZAPRET_RELEASE_API = f"https://api.github.com/repos/{ZAPRET_REPO}/releases/latest"

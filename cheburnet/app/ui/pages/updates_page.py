@@ -117,7 +117,7 @@ class UpdateCard(QFrame):
 class UpdatesPage(QWidget):
     check_clicked = Signal()
     update_app_clicked = Signal()
-    update_singbox_clicked = Signal()
+    update_mihomo_clicked = Signal()
     update_zapret_clicked = Signal()
 
     def __init__(self) -> None:
@@ -138,7 +138,7 @@ class UpdatesPage(QWidget):
         self.grid.setVerticalSpacing(14)
         self.cards = {
             "app": UpdateCard("CheburNet"),
-            "singbox": UpdateCard("sing-box"),
+            "mihomo": UpdateCard("mihomo"),
             "zapret": UpdateCard("Zapret"),
         }
         self._relayout_cards()
@@ -149,7 +149,7 @@ class UpdatesPage(QWidget):
         for key, text, signal, primary in [
             ("check", "Проверить", self.check_clicked, True),
             ("app", "CheburNet", self.update_app_clicked, False),
-            ("singbox", "sing-box", self.update_singbox_clicked, False),
+            ("mihomo", "mihomo", self.update_mihomo_clicked, False),
             ("zapret", "Zapret", self.update_zapret_clicked, False),
         ]:
             button = QPushButton(text)

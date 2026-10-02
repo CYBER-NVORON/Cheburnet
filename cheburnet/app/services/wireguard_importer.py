@@ -1,40 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import ipaddress
 from pathlib import Path
 from typing import Any
 
 from cheburnet.app.errors import ProfileImportError
 from cheburnet.app.models.profile import Profile
-
-
-@dataclass(slots=True)
-class WireGuardPeer:
-    address: str
-    port: int
-    public_key: str
-    allowed_ips: list[str]
-    pre_shared_key: str = ""
-    persistent_keepalive_interval: int | None = None
-
-
-@dataclass(slots=True)
-class WireGuardConfig:
-    private_key: str
-    address: list[str]
-    dns: list[str]
-    mtu: int
-    peers: list[WireGuardPeer]
-
+from cheburnet.app.models.wireguard import WireGuardConfig, WireGuardPeer
 
 class WireGuardImporter:
-    def import_file(self, path: str | Path) -> Profile:
-        config_path = Path(path)
+    def import_file(self, config_path: Path) -> Profile:
         text = config_path.read_text(encoding="utf-8", errors="replace")
         parsed = self.parse_text(text)
         first_peer = parsed.peers[0]
         name = config_path.stem or "WireGuard"
-        profile = Profile(
+        return Profile(
             id=Profile.make_id(f"wireguard:{text}"),
             name=name,
             protocol="wireguard",
@@ -51,92 +31,77 @@ class WireGuardImporter:
                 "peers": len(parsed.peers),
             },
         )
-        return profile
 
     def parse(self, path: str | Path) -> WireGuardConfig:
         config_path = Path(path)
         if not config_path.exists():
-            raise ProfileImportError(f"WireGuard .conf не найден: {config_path}")
+            raise ProfileImportError(f"WireGuard .conf �� ������: {config_path}")
         return self.parse_text(config_path.read_text(encoding="utf-8", errors="replace"))
 
     def parse_text(self, text: str) -> WireGuardConfig:
-        sections: list[tuple[str, dict[str, str]]] = []
+        sections = []
         current_name = ""
-        current: dict[str, str] = {}
+        current = {}
         for raw in text.splitlines():
             line = raw.strip().lstrip("\ufeff")
-            if not line or line.startswith(("#", ";")):
-                continue
+            if not line or line.startswith(("#", ";")): continue
             if line.startswith("[") and line.endswith("]"):
-                if current_name:
-                    sections.append((current_name.lower(), current))
+                if current_name: sections.append((current_name.lower(), current))
                 current_name = line[1:-1].strip()
                 current = {}
                 continue
-            if "=" not in line or not current_name:
-                continue
+            if "=" not in line or not current_name: continue
             key, value = line.split("=", 1)
             current[key.strip().lower()] = value.strip()
-        if current_name:
-            sections.append((current_name.lower(), current))
+        if current_name: sections.append((current_name.lower(), current))
 
         interface = next((data for name, data in sections if name == "interface"), None)
         peers_raw = [data for name, data in sections if name == "peer"]
-        if not interface:
-            raise ProfileImportError("В WireGuard .conf нет секции [Interface].")
-        if not peers_raw:
-            raise ProfileImportError("В WireGuard .conf нет секции [Peer].")
+        if not interface or not peers_raw:
+            raise ProfileImportError("WireGuard ���� ������.")
 
         private_key = interface.get("privatekey", "")
         address = self._split_csv(interface.get("address", ""))
-        if not private_key:
-            raise ProfileImportError("В [Interface] отсутствует PrivateKey.")
-        if not address:
-            raise ProfileImportError("В [Interface] отсутствует Address.")
+        if not private_key or not address:
+            raise ProfileImportError("� [Interface] ����������� �����.")
 
-        peers: list[WireGuardPeer] = []
+        peers = []
         for peer in peers_raw:
             public_key = peer.get("publickey", "")
             endpoint = peer.get("endpoint", "")
             allowed_ips = self._split_csv(peer.get("allowedips", ""))
-            if not public_key:
-                raise ProfileImportError("В [Peer] отсутствует PublicKey.")
-            if not endpoint:
-                raise ProfileImportError("В [Peer] отсутствует Endpoint.")
-            if not allowed_ips:
-                raise ProfileImportError("В [Peer] отсутствует AllowedIPs.")
+            if not public_key or not endpoint or not allowed_ips:
+                raise ProfileImportError("� [Peer] ����������� �����.")
             host, port = self._parse_endpoint(endpoint)
             keepalive = None
             if peer.get("persistentkeepalive"):
-                try:
-                    keepalive = int(peer["persistentkeepalive"])
-                except ValueError:
-                    keepalive = None
-            peers.append(
-                WireGuardPeer(
-                    address=host,
-                    port=port,
-                    public_key=public_key,
-                    allowed_ips=allowed_ips,
-                    pre_shared_key=peer.get("presharedkey", ""),
-                    persistent_keepalive_interval=keepalive,
-                )
-            )
+                try: keepalive = int(peer["persistentkeepalive"])
+                except ValueError: pass
+            peers.append(WireGuardPeer(address=host, port=port, public_key=public_key, allowed_ips=allowed_ips, pre_shared_key=peer.get("presharedkey", ""), persistent_keepalive_interval=keepalive))
 
         mtu = 1408
         if interface.get("mtu"):
-            try:
-                mtu = int(interface["mtu"])
-            except ValueError:
-                pass
+            try: mtu = int(interface["mtu"])
+            except ValueError: pass
 
-        return WireGuardConfig(
-            private_key=private_key,
-            address=address,
-            dns=self._split_csv(interface.get("dns", "")),
-            mtu=mtu,
-            peers=peers,
-        )
+        return WireGuardConfig(private_key=private_key, address=address, dns=self._split_csv(interface.get("dns", "")), mtu=mtu, peers=peers)
+
+    def proxy_dict(self, config: WireGuardConfig) -> dict[str, Any]:
+        peer = config.peers[0]
+        proxy = {
+            "name": "proxy",
+            "type": "wireguard",
+            "server": peer.address,
+            "port": peer.port,
+            "ip": config.address[0],
+            "public-key": peer.public_key,
+            "private-key": config.private_key,
+            "udp": True
+        }
+        if config.mtu: proxy["mtu"] = config.mtu
+        if config.address[0].startswith("::") or ":" in config.address[0]:
+            proxy["ipv6"] = config.address[0]
+        return proxy
 
     @staticmethod
     def config_to_dict(config: WireGuardConfig) -> dict[str, Any]:
@@ -162,57 +127,17 @@ class WireGuardImporter:
     def config_from_dict(data: dict[str, Any]) -> WireGuardConfig:
         peers = [
             WireGuardPeer(
-                address=str(peer.get("address") or ""),
-                port=int(peer.get("port") or 0),
-                public_key=str(peer.get("public_key") or ""),
-                allowed_ips=[str(item) for item in peer.get("allowed_ips", [])],
+                address=str(peer.get("address") or ""), port=int(peer.get("port") or 0),
+                public_key=str(peer.get("public_key") or ""), allowed_ips=[str(item) for item in peer.get("allowed_ips", [])],
                 pre_shared_key=str(peer.get("pre_shared_key") or ""),
-                persistent_keepalive_interval=(
-                    int(peer["persistent_keepalive_interval"])
-                    if peer.get("persistent_keepalive_interval") is not None
-                    else None
-                ),
+                persistent_keepalive_interval=int(peer["persistent_keepalive_interval"]) if peer.get("persistent_keepalive_interval") is not None else None
             )
-            for peer in data.get("peers", [])
-            if isinstance(peer, dict)
+            for peer in data.get("peers", []) if isinstance(peer, dict)
         ]
-        return WireGuardConfig(
-            private_key=str(data.get("private_key") or ""),
-            address=[str(item) for item in data.get("address", [])],
-            dns=[str(item) for item in data.get("dns", [])],
-            mtu=int(data.get("mtu") or 1408),
-            peers=peers,
-        )
+        return WireGuardConfig(private_key=str(data.get("private_key") or ""), address=[str(item) for item in data.get("address", [])], dns=[str(item) for item in data.get("dns", [])], mtu=int(data.get("mtu") or 1408), peers=peers)
 
     @staticmethod
-    def endpoint_dict(config: WireGuardConfig) -> dict[str, Any]:
-        peers: list[dict[str, Any]] = []
-        for peer in config.peers:
-            item: dict[str, Any] = {
-                "address": peer.address,
-                "port": peer.port,
-                "public_key": peer.public_key,
-                "allowed_ips": peer.allowed_ips,
-            }
-            if peer.pre_shared_key:
-                item["pre_shared_key"] = peer.pre_shared_key
-            if peer.persistent_keepalive_interval is not None:
-                item["persistent_keepalive_interval"] = peer.persistent_keepalive_interval
-            peers.append(item)
-        return {
-            "type": "wireguard",
-            "tag": "vpn",
-            "system": False,
-            "name": "cheburnet-wg",
-            "mtu": config.mtu,
-            "address": config.address,
-            "private_key": config.private_key,
-            "peers": peers,
-        }
-
-    @staticmethod
-    def _split_csv(value: str) -> list[str]:
-        return [item.strip() for item in value.split(",") if item.strip()]
+    def _split_csv(value: str) -> list[str]: return [item.strip() for item in value.split(",") if item.strip()]
 
     @staticmethod
     def _parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -220,10 +145,8 @@ class WireGuardImporter:
         if text.startswith("["):
             host, _, rest = text[1:].partition("]")
             port = rest.lstrip(":")
-            if not host or not port:
-                raise ProfileImportError(f"Некорректный Endpoint: {endpoint}")
+            if not host or not port: raise ProfileImportError("Invalid endpoint")
             return host, int(port)
-        if ":" not in text:
-            raise ProfileImportError(f"Некорректный Endpoint: {endpoint}")
+        if ":" not in text: raise ProfileImportError("Invalid endpoint")
         host, port = text.rsplit(":", 1)
         return host.strip(), int(port)

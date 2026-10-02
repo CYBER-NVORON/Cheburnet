@@ -2,7 +2,13 @@ $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-python -m PyInstaller --clean --noconfirm build/cheburnet.spec
+if (Test-Path -LiteralPath ".\.venv\Scripts\python.exe") {
+    $PythonExe = ".\.venv\Scripts\python.exe"
+} else {
+    $PythonExe = "python"
+}
+
+& $PythonExe -m PyInstaller --clean --noconfirm build/cheburnet.spec
 if ($LASTEXITCODE -ne 0) {
   throw "PyInstaller failed with exit code $LASTEXITCODE"
 }

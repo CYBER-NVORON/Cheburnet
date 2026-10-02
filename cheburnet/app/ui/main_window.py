@@ -37,8 +37,8 @@ from cheburnet.app.models.zapret_status import ZapretStatus
 from cheburnet.app.services.free_configs_service import FreeConfigsService
 from cheburnet.app.services.healthcheck_service import HealthcheckService
 from cheburnet.app.services.profile_store import ProfileStore
-from cheburnet.app.services.singbox_config_builder import SingBoxConfigBuilder
-from cheburnet.app.services.singbox_service import SingBoxService
+from cheburnet.app.services.mihomo_config_builder import MihomoConfigBuilder
+from cheburnet.app.services.mihomo_service import MihomoService
 from cheburnet.app.services.traffic_monitor import TrafficMonitor
 from cheburnet.app.services.wireguard_importer import WireGuardImporter
 from cheburnet.app.services.zapret_service import ZapretService
@@ -125,16 +125,16 @@ class MainWindow(QMainWindow):
         self.traffic_monitor = TrafficMonitor()
         self.self_update = SelfUpdateService()
 
-        self.singbox = SingBoxService()
+        self.mihomo = MihomoService()
         self.zapret_service = ZapretService(self.settings.section("zapret").get("install_dir") or None)
         self.wireguard = WireGuardImporter()
-        self.builder = SingBoxConfigBuilder(self.wireguard)
+        self.builder = MihomoConfigBuilder(self.wireguard)
         self.vpn_controller = VpnController(
             self.state,
             self.settings,
             self.profiles,
             self.logger,
-            self.singbox,
+            self.mihomo,
             self.builder,
             FreeConfigsService(),
             self.wireguard,
@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
         logs.clear_clicked.connect(self._clear_logs)  # type: ignore[attr-defined]
         updates.check_clicked.connect(self._check_updates)  # type: ignore[attr-defined]
         updates.update_app_clicked.connect(self._update_app)  # type: ignore[attr-defined]
-        updates.update_singbox_clicked.connect(self._update_singbox)  # type: ignore[attr-defined]
+        updates.update_mihomo_clicked.connect(self._update_mihomo)  # type: ignore[attr-defined]
         updates.update_zapret_clicked.connect(self._download_zapret)  # type: ignore[attr-defined]
 
         self.state.traffic_changed.connect(lambda data: self.sidebar.set_traffic(float(data.get("download_mbps", 0)), float(data.get("upload_mbps", 0))))
@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
         self.logger.info(f"Проверка прав администратора: {'OK' if self.state.is_admin else 'нет прав'}")
         try:
             self.self_update.cleanup_old_updates()
-            self.singbox.cleanup_old_downloads()
+            self.mihomo.cleanup_old_downloads()
         except Exception as exc:
             self.logger.warning(f"Очистка временных файлов обновлений: {exc}")
         self.vpn_controller.load_profiles()
@@ -564,7 +564,7 @@ class MainWindow(QMainWindow):
 
             data: dict[str, dict[str, str]] = {
                 "app": {"status": "neutral", "version": APP_VERSION, "note": "Запрос"},
-                "singbox": {"status": "neutral", "version": "—", "note": "Не проверялось"},
+                "mihomo": {"status": "neutral", "version": "—", "note": "Не проверялось"},
                 "zapret": {"status": "neutral", "version": "—", "note": "Не проверялось"},
             }
             try:
@@ -573,18 +573,18 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 data["app"] = {"status": "error", "version": APP_VERSION, "note": short_error(exc)}
 
-            current_singbox = self.singbox.version() or "не установлен"
+            current_mihomo = self.mihomo.version() or "не установлен"
             try:
-                latest = self.singbox.latest_release()
-                latest_singbox = str(latest.get("tag_name") or latest.get("name") or "latest")
-                status = "warn" if current_singbox == "не установлен" or is_newer_version(latest_singbox, current_singbox) else "ok"
-                data["singbox"] = {
+                latest = self.mihomo.latest_release()
+                latest_mihomo = str(latest.get("tag_name") or latest.get("name") or "latest")
+                status = "warn" if current_mihomo == "не установлен" or is_newer_version(latest_mihomo, current_mihomo) else "ok"
+                data["mihomo"] = {
                     "status": status,
-                    "version": current_singbox,
-                    "note": "Актуально" if status == "ok" else f"Доступно {latest_singbox}",
+                    "version": current_mihomo,
+                    "note": "Актуально" if status == "ok" else f"Доступно {latest_mihomo}",
                 }
             except Exception as exc:
-                data["singbox"] = {"status": "error", "version": current_singbox, "note": short_error(exc)}
+                data["mihomo"] = {"status": "error", "version": current_mihomo, "note": short_error(exc)}
 
             local_zapret = self.zapret_service.local_version() or ("установлен" if self.zapret_service.is_installed() else "не установлен")
             try:
@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
             self.logger.info("Обновление CheburNet подготовлено, установка отложена")
             return
         try:
-            self.singbox.stop()
+            self.mihomo.stop()
         except Exception:
             pass
         try:
@@ -632,8 +632,8 @@ class MainWindow(QMainWindow):
         self.self_update.start_update_and_exit(prepared)
         QApplication.quit()
 
-    def _update_singbox(self) -> None:
-        self._run_task(lambda progress: self.singbox.download_latest(progress), done=lambda path: self.logger.info(f"sing-box обновлен: {path}"))
+    def _update_mihomo(self) -> None:
+        self._run_task(lambda progress: self.mihomo.download_latest(progress), done=lambda path: self.logger.info(f"mihomo обновлен: {path}"))
 
     def _refresh_scripts(self, check_process: bool = False) -> None:
         scripts = self.zapret_controller.scripts()
@@ -712,9 +712,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         try:
-            self.singbox.stop()
+            self.mihomo.stop()
         except Exception as exc:
-            self.logger.error(f"Ошибка остановки sing-box: {exc}")
+            self.logger.error(f"Ошибка остановки mihomo: {exc}")
         try:
             self.zapret_service.stop()
         except Exception as exc:
