@@ -173,11 +173,11 @@ class FreeConfigsService:
         if security == "reality":
             reality: dict[str, object] = {"enabled": True}
             if query.get("pbk"):
-                reality["public_key"] = query["pbk"]
+                pbk = query["pbk"].replace("-", "+").replace("_", "/")
+                pbk += "=" * ((4 - len(pbk) % 4) % 4)
+                reality["public_key"] = pbk
             if query.get("sid"):
                 reality["short_id"] = query["sid"]
-            if "spx" in query:
-                reality["spider_x"] = query["spx"]
             tls["reality"] = reality
         outbound["tls"] = tls
 
