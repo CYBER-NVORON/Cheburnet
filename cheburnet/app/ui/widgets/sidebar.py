@@ -28,17 +28,18 @@ class Sidebar(QFrame):
         layout.addLayout(brand_row)
         layout.addSpacing(18)
 
-        for key, text in [
-            ("dashboard", "Главная"),
-            ("vpn", "VPN и серверы"),
-            ("zapret", "Zapret"),
-            ("rules", "Правила"),
-            ("logs", "Журнал"),
-            ("settings", "Настройки"),
-            ("updates", "Обновления"),
+        for key, text, tooltip in [
+            ("dashboard", "Главная (Статус)", "Общая информация и быстрый запуск"),
+            ("vpn", "VPN и серверы", "Настройка VPN подключений и прокси"),
+            ("zapret", "Zapret", "Управление сервисом Zapret (YouTube/Discord)"),
+            ("rules", "Правила (Сплит)", "Настройка туннелирования и разделения трафика"),
+            ("logs", "Журнал (Логи)", "Просмотр логов работы программы"),
+            ("settings", "Настройки", "Общие настройки интерфейса и поведения"),
+            ("updates", "Обновления", "Проверка новых версий CheburNet и компонентов"),
         ]:
             button = QPushButton(text)
             button.setObjectName("navButton")
+            button.setToolTip(tooltip)
             button.clicked.connect(lambda _checked=False, page=key: self.page_selected.emit(page))
             layout.addWidget(button)
             self.buttons[key] = button

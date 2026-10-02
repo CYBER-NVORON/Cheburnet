@@ -15,7 +15,7 @@ class RulesPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 22, 24, 22)
         card = GlassCard("Правила маршрутизации")
-        note = QLabel("Домены из списка идут напрямую. В Smart split YouTube/Discord добавляются автоматически для Zapret.")
+        note = QLabel("В этом списке укажите домены, которые будут открываться напрямую (без VPN). В режиме 'Туннелирование' трафик на YouTube/Discord автоматически идет в обход VPN (через Zapret).")
         note.setObjectName("muted")
         note.setWordWrap(True)
         card.layout.addWidget(note)

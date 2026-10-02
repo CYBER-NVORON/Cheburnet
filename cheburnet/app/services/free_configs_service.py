@@ -38,6 +38,8 @@ class FreeConfigsService:
             outbound["flow"] = query["flow"]
         if query.get("packetEncoding") or query.get("packet_encoding"):
             outbound["packet_encoding"] = query.get("packetEncoding") or query.get("packet_encoding")
+        elif outbound.get("flow") in ("xtls-rprx-vision", "xtls-rprx-vision-udp443"):
+            outbound["packet_encoding"] = "xudp"
         self._apply_tls(outbound, query, server)
         if not self._apply_transport(outbound, query):
             return None
