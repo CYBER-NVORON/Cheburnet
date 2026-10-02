@@ -10,7 +10,7 @@ from cheburnet.app.models.profile import Profile
 
 class FreeConfigsService:
     def parse_link(self, link: str, source: str = "") -> Profile | None:
-        link = link.strip()
+        link = link.replace(" ", "").replace("\n", "").replace("\r", "").replace("\t", "").strip()
         try:
             if link.startswith("vless://"):
                 return self._parse_vless(link, source)
@@ -173,11 +173,9 @@ class FreeConfigsService:
         if security == "reality":
             reality: dict[str, object] = {"enabled": True}
             if query.get("pbk"):
-                pbk = query["pbk"].replace("-", "+").replace("_", "/")
-                pbk += "=" * ((4 - len(pbk) % 4) % 4)
-                reality["public_key"] = pbk
+                reality["public_key"] = query["pbk"].replace(" ", "").replace("\n", "").replace("\r", "")
             if query.get("sid"):
-                reality["short_id"] = query["sid"]
+                reality["short_id"] = query["sid"].replace(" ", "").replace("\n", "").replace("\r", "")
             tls["reality"] = reality
         outbound["tls"] = tls
 
